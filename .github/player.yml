@@ -1,0 +1,71 @@
+name: Android Release Build & MEGA Upload
+
+on:  
+  push:    
+    branches: [ "main" ] # Triggers on both so you don't miss a build!
+
+jobs:  
+  build-release:    
+    name: Build & Upload Release APK and AAB    
+    runs-on: ubuntu-latest    
+    
+    steps:      
+      - name: Checkout Code        
+        uses: actions/checkout@v4      
+        
+      - name: Setup Java        
+        uses: actions/setup-java@v4        
+        with:          
+          java-version: '17'          
+          distribution: 'temurin'       
+          
+      - name: Grant Execute Permission for Gradle        
+        run: chmod +x ./gradlew      
+        
+      # 1. Build BOTH the unsigned APK and the AAB
+      - name: Build Release APK & AAB        
+        run: ./gradlew assembleRelease #bundleRelease      
+        
+      # 2. Securely sign the APK for MEGA
+      - name: Sign Release APK        
+        uses: r0adkll/sign-android-release@v1        
+        id: sign_apk        
+        with:          
+          releaseDirectory: app/build/outputs/apk/release          
+          signingKeyBase64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}          
+          alias: ${{ secrets.ANDROID_KEY_ALIAS }}          
+          keyStorePassword: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}          
+          keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}        
+        env:          
+          BUILD_TOOLS_VERSION: "34.0.0"      
+          
+      # 3. Securely sign the AAB for Google Play
+      #- name: Sign Release AAB        
+       # uses: r0adkll/sign-android-release@v1        
+        #id: sign_aab        
+        #with:          
+         # releaseDirectory: app/build/outputs/bundle/release          
+          #signingKeyBase64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}          
+          #alias: ${{ secrets.ANDROID_KEY_ALIAS }}          
+          #keyStorePassword: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}          
+          #keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}        
+        #env:          
+         # BUILD_TOOLS_VERSION: "34.0.0"
+
+      # 4. Upload the signed APK to MEGA
+      - name: Upload Release APK to MEGA        
+        uses: Difegue/action-megacmd@master        
+        with:          
+          args: put "${{ steps.sign_apk.outputs.signedReleaseFile }}" "/MusicPlayer_Release/"        
+        env:          
+          USERNAME: ${{ secrets.MEGA_USERNAME }}          
+          PASSWORD: ${{ secrets.MEGA_PASSWORD }}
+
+      # 5. Save the signed AAB to GitHub Artifacts (So you can download it for Google Play)
+      #- name: Upload AAB to Mega Actions
+      #  uses: Difegue/action-megacmd@master        
+      #  with:          
+      #    args: put "${{ steps.sign_apk.outputs.signedReleaseFile }}" "/MusicPlayer_Release/"        
+      #  env:          
+      #    USERNAME: ${{ secrets.MEGA_USERNAME }}          
+      #    PASSWORD: ${{ secrets.MEGA_PASSWORD }}
