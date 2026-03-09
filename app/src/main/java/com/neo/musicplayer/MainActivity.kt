@@ -54,7 +54,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
-
+import androidx.compose.ui.unit.sp
 // --- Aesthetic Pastel Theme Colors ---
 private val PastelLavenderLight = Color(0xFFB39DDB)
 private val PastelBackgroundLight = Color(0xFFFDFBFD) 
@@ -282,7 +282,7 @@ fun FullScreenPlayer(
                         val scrollState = rememberScrollState()
                         Text(
                             text = internetData.lyrics,
-                            style = MaterialTheme.typography.titleMedium.copy(lineHeight = 28.dp),
+                            style = MaterialTheme.typography.titleMedium.copy(lineHeight = 28.sp),
                             color = Color.White,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxSize().verticalScroll(scrollState).clickable { showLyrics = false }
