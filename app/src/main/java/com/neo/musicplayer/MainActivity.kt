@@ -17,6 +17,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -47,6 +48,8 @@ import androidx.media3.exoplayer.ExoPlayer
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -79,7 +82,6 @@ data class LocalSong(val id: Long, val title: String, val artist: String, val al
     val albumArtUri: Uri get() = Uri.parse("content://media/external/audio/albumart/$albumId")
 }
 
-// Upgraded to hold Lyrics!
 data class InternetSongData(val title: String, val artist: String, val artUrl: String, val lyrics: String? = null)
 
 class MainActivity : ComponentActivity() {
@@ -124,7 +126,6 @@ fun MusicPlayerUI() {
         currentSong = song
         fetchedInternetData = null 
         
-        // Fetch High-Res Internet Art, Official Details, AND Lyrics simultaneously
         coroutineScope.launch {
             fetchedInternetData = fetchMultiSourceMetadata(song.title, song.artist)
         }
@@ -135,7 +136,6 @@ fun MusicPlayerUI() {
         exoPlayer.play()
     }
 
-    // Zero-Delay Auto-Play Next Track
     LaunchedEffect(playbackState) {
         if (playbackState == Player.STATE_ENDED && currentSong != null) {
             val index = localSongs.indexOf(currentSong)
@@ -248,16 +248,21 @@ fun FullScreenPlayer(
     val displayArtist = internetData?.artist ?: song.artist
     val displayArt = internetData?.artUrl ?: song.albumArtUri
     
-    // Toggle state for showing lyrics
     var showLyrics by remember { mutableStateOf(false) }
 
-    // THE NUCLEAR WALL: Using a Surface with an opaque background completely blocks touches 
-    // from reaching the list underneath, no matter how fast the songs auto-play.
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null, 
+                    onClick = {} 
+                )
+        ) {
             AsyncImage(
                 model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(),
                 contentDescription = null, contentScale = ContentScale.Crop,
@@ -268,7 +273,6 @@ fun FullScreenPlayer(
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = onClose) { Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Minimize", modifier = Modifier.size(36.dp), tint = Color.White) }
                     
-                    // Show lyrics toggle icon if lyrics exist
                     if (internetData?.lyrics != null) {
                         IconButton(onClick = { showLyrics = !showLyrics }) {
                             Icon(if (showLyrics) Icons.Default.MusicNote else Icons.Default.Subject, contentDescription = "Toggle Lyrics", tint = Color.White)
@@ -277,7 +281,6 @@ fun FullScreenPlayer(
                 }
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // The Content Area: Flips between Album Art and Lyrics
                 Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
                     if (showLyrics && internetData?.lyrics != null) {
                         val scrollState = rememberScrollState()
@@ -286,10 +289,18 @@ fun FullScreenPlayer(
                             style = MaterialTheme.typography.titleMedium.copy(lineHeight = 28.sp),
                             color = Color.White,
                             textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxSize().verticalScroll(scrollState).clickable { showLyrics = false }
+                            modifier = Modifier.fillMaxSize().verticalScroll(scrollState).clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = { showLyrics = false }
+                            )
                         )
                     } else {
-                        Card(modifier = Modifier.fillMaxWidth().aspectRatio(1f).shadow(24.dp, RoundedCornerShape(32.dp)).clickable { if (internetData?.lyrics != null) showLyrics = true }, shape = RoundedCornerShape(32.dp)) {
+                        Card(modifier = Modifier.fillMaxWidth().aspectRatio(1f).shadow(24.dp, RoundedCornerShape(32.dp)).clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = { if (internetData?.lyrics != null) showLyrics = true }
+                        ), shape = RoundedCornerShape(32.dp)) {
                             AsyncImage(
                                 model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(1000).build(),
                                 contentDescription = "Album Art", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)
@@ -391,7 +402,6 @@ fun fetchLocalMusic(context: Context): List<LocalSong> {
 // THE MULTI-SOURCE METADATA ENGINE (iTunes + Deezer + LRCLIB)
 // =========================================================================
 
-// Helper 1: iTunes API (Best for mainstream global tracks)
 private fun searchItunesAPI(query: String): InternetSongData? {
     try {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
@@ -420,7 +430,6 @@ private fun searchItunesAPI(query: String): InternetSongData? {
     return null
 }
 
-// Helper 2: Deezer API (Best for Tamil/regional music and unofficial edits)
 private fun searchDeezerAPI(query: String): InternetSongData? {
     try {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
@@ -452,36 +461,44 @@ private fun searchDeezerAPI(query: String): InternetSongData? {
     return null
 }
 
-// The Dragnet Fetcher
-suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSongData? = withContext(Dispatchers.IO) {
-    // 1. Keyword Generation - Strip garbage tags AND Date/Timestamp Numbers
+// The Concurrent Dragnet Fetcher
+suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSongData? = coroutineScope {
     val cleanTitle = title.lowercase()
         .replace(".mp3", "").replace(".m4a", "").replace(".wav", "")
         .replace("y2mate.com", "").replace("y2mate", "")
         .replace("official video", "").replace("official audio", "")
         .replace("lyrics", "").replace("hd", "")
         .replace("slowed", "").replace("reverb", "") 
-        // THE DATE FILTER: Nukes formatted dates like 2023-10-24, 12_05_2022, or 24/10/2023
         .replace(Regex("\\b\\d{2,4}[-/_]\\d{2}[-/_]\\d{2,4}\\b"), "")
-        // THE TIMESTAMP FILTER: Nukes raw block numbers between 6 and 10 digits long (like 20231024)
         .replace(Regex("\\b\\d{6,10}\\b"), "")
-        // Strip weird remaining symbols
         .replace(Regex("[^a-zA-Z0-9 ]"), " ") 
-        // Clean up any awkward double spaces left behind by the deleted words
         .replace(Regex("\\s+"), " ")
         .trim()
 
     val isUnknownArtist = artist.contains("unknown", ignoreCase = true)
     var result: InternetSongData? = null
 
-    // --- THE DRAGNET NETWORK SEARCH ---
+    // Attempt 1: Fire Strict Matches at the EXACT SAME TIME
+    val strictItunesTask = async(Dispatchers.IO) { if (!isUnknownArtist) searchItunesAPI("$cleanTitle $artist") else null }
+    val strictDeezerTask = async(Dispatchers.IO) { if (!isUnknownArtist) searchDeezerAPI("$cleanTitle $artist") else null }
     
-    if (!isUnknownArtist) result = searchItunesAPI("$cleanTitle $artist")
-    if (result == null && !isUnknownArtist) result = searchDeezerAPI("$cleanTitle $artist")
-    if (result == null) result = searchItunesAPI(cleanTitle)
-    if (result == null) result = searchDeezerAPI(cleanTitle)
+    val strictItunesResult = strictItunesTask.await()
+    val strictDeezerResult = strictDeezerTask.await()
+    
+    result = strictItunesResult ?: strictDeezerResult
 
-    // --- LYRICS SEARCH ---
+    // Attempt 2: If both failed, fire Loose Matches at the EXACT SAME TIME
+    if (result == null) {
+        val looseItunesTask = async(Dispatchers.IO) { searchItunesAPI(cleanTitle) }
+        val looseDeezerTask = async(Dispatchers.IO) { searchDeezerAPI(cleanTitle) }
+        
+        val looseItunesResult = looseItunesTask.await()
+        val looseDeezerResult = looseDeezerTask.await()
+        
+        result = looseItunesResult ?: looseDeezerResult
+    }
+
+    // --- CONCURRENT LYRICS SEARCH ---
     if (result != null) {
         try {
             val lrcQuery = URLEncoder.encode("${result.title} ${result.artist}", "UTF-8")
@@ -502,5 +519,5 @@ suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSon
         } catch (e: Exception) { e.printStackTrace() }
     }
 
-    return@withContext result
+    return@coroutineScope result
 }
