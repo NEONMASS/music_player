@@ -40,6 +40,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
@@ -54,7 +55,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
-import androidx.compose.ui.unit.sp
+
 // --- Aesthetic Pastel Theme Colors ---
 private val PastelLavenderLight = Color(0xFFB39DDB)
 private val PastelBackgroundLight = Color(0xFFFDFBFD) 
@@ -387,67 +388,119 @@ fun fetchLocalMusic(context: Context): List<LocalSong> {
 }
 
 // =========================================================================
-// THE MULTI-SOURCE METADATA ENGINE (iTunes + LRCLIB)
+// THE MULTI-SOURCE METADATA ENGINE (iTunes + Deezer + LRCLIB)
 // =========================================================================
 
+// Helper 1: iTunes API (Best for mainstream global tracks)
+private fun searchItunesAPI(query: String): InternetSongData? {
+    try {
+        val encodedQuery = URLEncoder.encode(query, "UTF-8")
+        val url = URL("https://itunes.apple.com/search?term=$encodedQuery&media=music&entity=song&limit=1")
+        
+        val connection = url.openConnection() as HttpURLConnection
+        connection.setRequestProperty("User-Agent", "Mozilla/5.0")
+        connection.connectTimeout = 3000
+        connection.readTimeout = 3000
+
+        if (connection.responseCode == 200) {
+            val response = connection.inputStream.bufferedReader().readText()
+            val results = JSONObject(response).optJSONArray("results")
+            
+            if (results != null && results.length() > 0) {
+                val trackNode = results.getJSONObject(0)
+                val officialTitle = trackNode.optString("trackName", "")
+                val officialArtist = trackNode.optString("artistName", "")
+                val rawArt = trackNode.optString("artworkUrl100", "")
+                val highResArt = rawArt.replace("100x100bb", "600x600bb")
+                
+                return InternetSongData(officialTitle, officialArtist, highResArt)
+            }
+        }
+    } catch (e: Exception) { e.printStackTrace() }
+    return null
+}
+
+// Helper 2: Deezer API (Best for Tamil/regional music and unofficial edits)
+private fun searchDeezerAPI(query: String): InternetSongData? {
+    try {
+        val encodedQuery = URLEncoder.encode(query, "UTF-8")
+        val url = URL("https://api.deezer.com/search?q=$encodedQuery&limit=1")
+        
+        val connection = url.openConnection() as HttpURLConnection
+        connection.setRequestProperty("User-Agent", "Mozilla/5.0")
+        connection.connectTimeout = 3000
+        connection.readTimeout = 3000
+
+        if (connection.responseCode == 200) {
+            val response = connection.inputStream.bufferedReader().readText()
+            val data = JSONObject(response).optJSONArray("data")
+            
+            if (data != null && data.length() > 0) {
+                val trackNode = data.getJSONObject(0)
+                val officialTitle = trackNode.optString("title", "")
+                
+                val artistNode = trackNode.optJSONObject("artist")
+                val officialArtist = artistNode?.optString("name", "") ?: ""
+                
+                val albumNode = trackNode.optJSONObject("album")
+                val highResArt = albumNode?.optString("cover_xl", "") ?: ""
+                
+                return InternetSongData(officialTitle, officialArtist, highResArt)
+            }
+        }
+    } catch (e: Exception) { e.printStackTrace() }
+    return null
+}
+
+// The Dragnet Fetcher
 suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSongData? = withContext(Dispatchers.IO) {
-    // 1. Keyword Generation - Strips garbage tags out of downloaded file names
+    // 1. Keyword Generation - Strip garbage tags AND Date/Timestamp Numbers
     val cleanTitle = title.lowercase()
         .replace(".mp3", "").replace(".m4a", "").replace(".wav", "")
         .replace("y2mate.com", "").replace("y2mate", "")
         .replace("official video", "").replace("official audio", "")
         .replace("lyrics", "").replace("hd", "")
+        .replace("slowed", "").replace("reverb", "") 
+        // THE DATE FILTER: Nukes formatted dates like 2023-10-24, 12_05_2022, or 24/10/2023
+        .replace(Regex("\\b\\d{2,4}[-/_]\\d{2}[-/_]\\d{2,4}\\b"), "")
+        // THE TIMESTAMP FILTER: Nukes raw block numbers between 6 and 10 digits long (like 20231024)
+        .replace(Regex("\\b\\d{6,10}\\b"), "")
+        // Strip weird remaining symbols
         .replace(Regex("[^a-zA-Z0-9 ]"), " ") 
+        // Clean up any awkward double spaces left behind by the deleted words
+        .replace(Regex("\\s+"), " ")
         .trim()
 
     val isUnknownArtist = artist.contains("unknown", ignoreCase = true)
+    var result: InternetSongData? = null
+
+    // --- THE DRAGNET NETWORK SEARCH ---
     
-    // 2. Fetch Base Metadata from iTunes
-    var officialTitle = cleanTitle
-    var officialArtist = if (!isUnknownArtist) artist else ""
-    var highResArt = ""
+    if (!isUnknownArtist) result = searchItunesAPI("$cleanTitle $artist")
+    if (result == null && !isUnknownArtist) result = searchDeezerAPI("$cleanTitle $artist")
+    if (result == null) result = searchItunesAPI(cleanTitle)
+    if (result == null) result = searchDeezerAPI(cleanTitle)
 
-    val itunesQuery = URLEncoder.encode(if (!isUnknownArtist) "$cleanTitle $artist" else cleanTitle, "UTF-8")
-    try {
-        val url = URL("https://itunes.apple.com/search?term=$itunesQuery&media=music&entity=song&limit=1")
-        val conn = url.openConnection() as HttpURLConnection
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-        if (conn.responseCode == 200) {
-            val response = conn.inputStream.bufferedReader().readText()
-            val results = JSONObject(response).optJSONArray("results")
-            if (results != null && results.length() > 0) {
-                val trackNode = results.getJSONObject(0)
-                officialTitle = trackNode.optString("trackName", cleanTitle)
-                officialArtist = trackNode.optString("artistName", artist)
-                highResArt = trackNode.optString("artworkUrl100", "").replace("100x100bb", "600x600bb")
-            }
-        }
-    } catch (e: Exception) { e.printStackTrace() }
-
-    // 3. Fetch Lyrics from LRCLIB using the cleaned official data
-    var fetchedLyrics: String? = null
-    try {
-        val lrcQuery = URLEncoder.encode("$officialTitle $officialArtist", "UTF-8")
-        val url = URL("https://lrclib.net/api/search?q=$lrcQuery")
-        val conn = url.openConnection() as HttpURLConnection
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-        if (conn.responseCode == 200) {
-            val response = conn.inputStream.bufferedReader().readText()
-            val jsonArray = JSONArray(response)
-            if (jsonArray.length() > 0) {
-                val firstResult = jsonArray.getJSONObject(0)
-                val plainLyrics = firstResult.optString("plainLyrics", "")
-                if (plainLyrics.isNotEmpty()) {
-                    fetchedLyrics = plainLyrics
+    // --- LYRICS SEARCH ---
+    if (result != null) {
+        try {
+            val lrcQuery = URLEncoder.encode("${result.title} ${result.artist}", "UTF-8")
+            val url = URL("https://lrclib.net/api/search?q=$lrcQuery")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+            
+            if (conn.responseCode == 200) {
+                val response = conn.inputStream.bufferedReader().readText()
+                val jsonArray = JSONArray(response)
+                if (jsonArray.length() > 0) {
+                    val plainLyrics = jsonArray.getJSONObject(0).optString("plainLyrics", "")
+                    if (plainLyrics.isNotEmpty()) {
+                        result = result.copy(lyrics = plainLyrics)
+                    }
                 }
             }
-        }
-    } catch (e: Exception) { e.printStackTrace() }
-
-    // Return the combined multi-angle data
-    if (highResArt.isNotEmpty() || fetchedLyrics != null) {
-        return@withContext InternetSongData(officialTitle, officialArtist, highResArt, fetchedLyrics)
+        } catch (e: Exception) { e.printStackTrace() }
     }
-    
-    return@withContext null
+
+    return@withContext result
 }
