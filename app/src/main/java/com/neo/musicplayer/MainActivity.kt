@@ -28,6 +28,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import android.content.ContentUris 
+import androidx.media3.common.MediaItem 
+import androidx.media3.exoplayer.ExoPlayer /
 
 // --- Aesthetic Pastel Theme Colors ---
 private val PastelLavenderLight = Color(0xFFB39DDB)
@@ -210,7 +213,7 @@ fun IconOnlyBottomBar() {
     }
 }
 
-// OS Scanner Logic
+// OS Scanner Logic with strict filtering
 fun fetchLocalMusic(context: Context): List<LocalSong> {
     val songs = mutableListOf<LocalSong>()
     val uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
@@ -218,16 +221,28 @@ fun fetchLocalMusic(context: Context): List<LocalSong> {
         MediaStore.Audio.Media._ID,
         MediaStore.Audio.Media.TITLE,
         MediaStore.Audio.Media.ARTIST,
-        MediaStore.Audio.Media.IS_MUSIC
+        MediaStore.Audio.Media.DATA // We need the file path to filter out junk
     )
+    
+    // Base filter: It must claim to be music
     val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0"
     
     context.contentResolver.query(uri, projection, selection, null, "${MediaStore.Audio.Media.TITLE} ASC")?.use { cursor ->
         val idCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
         val titleCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
         val artistCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
+        val dataCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA)
         
         while (cursor.moveToNext()) {
+            val path = cursor.getString(dataCol) ?: ""
+            
+            // The Firewall: Ignore anything from WhatsApp or Voice Recorders
+            if (path.contains("WhatsApp", ignoreCase = true) || 
+                path.contains("Recordings", ignoreCase = true) || 
+                path.contains("Voice Recorder", ignoreCase = true)) {
+                continue 
+            }
+
             val title = cursor.getString(titleCol) ?: "Unknown Title"
             val artist = cursor.getString(artistCol) ?: "Unknown Artist"
             songs.add(LocalSong(cursor.getLong(idCol), title, artist))
@@ -235,3 +250,70 @@ fun fetchLocalMusic(context: Context): List<LocalSong> {
     }
     return songs
 }
+
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MusicPlayerUI() {
+    val context = LocalContext.current
+    var isSearchActive by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var localSongs by remember { mutableStateOf<List<LocalSong>>(emptyList()) }
+    var permissionGranted by remember { mutableStateOf(false) }
+
+    // 1. Initialize ExoPlayer safely inside Compose
+    val exoPlayer = remember {
+        ExoPlayer.Builder(context).build()
+    }
+
+    // Clean up the player when the app is completely closed
+    DisposableEffect(Unit) {
+        onDispose {
+            exoPlayer.release()
+        }
+    }
+
+    // ... (Keep your existing permission logic and Scaffold setup here) ...
+
+            // Inside your LazyColumn where you draw the list of songs:
+            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                items(localSongs) { song ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 6.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .padding(16.dp)
+                                .fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(song.title, fontWeight = FontWeight.SemiBold, maxLines = 1, color = MaterialTheme.colorScheme.onSurface)
+                                Text(song.artist, style = MaterialTheme.typography.bodySmall, maxLines = 1, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                            }
+                            
+                            // 2. The Play Button Trigger
+                            IconButton(onClick = { 
+                                // Build the exact URI for this specific local file
+                                val contentUri = ContentUris.withAppendedId(
+                                    MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, 
+                                    song.id
+                                )
+                                // Load it into ExoPlayer and hit play
+                                val mediaItem = MediaItem.fromUri(contentUri)
+                                exoPlayer.setMediaItem(mediaItem)
+                                exoPlayer.prepare()
+                                exoPlayer.play()
+                            }) {
+                                Icon(Icons.Default.PlayArrow, contentDescription = "Play", tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                    }
+                }
+            }
+// ... (The rest of your code)
