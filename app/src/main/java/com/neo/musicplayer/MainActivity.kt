@@ -17,13 +17,14 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -37,6 +38,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -47,6 +49,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -75,7 +78,8 @@ data class LocalSong(val id: Long, val title: String, val artist: String, val al
     val albumArtUri: Uri get() = Uri.parse("content://media/external/audio/albumart/$albumId")
 }
 
-data class InternetSongData(val title: String, val artist: String, val artUrl: String)
+// Upgraded to hold Lyrics!
+data class InternetSongData(val title: String, val artist: String, val artUrl: String, val lyrics: String? = null)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -119,8 +123,9 @@ fun MusicPlayerUI() {
         currentSong = song
         fetchedInternetData = null 
         
+        // Fetch High-Res Internet Art, Official Details, AND Lyrics simultaneously
         coroutineScope.launch {
-            fetchedInternetData = fetchOfficialMetadata(song.title, song.artist)
+            fetchedInternetData = fetchMultiSourceMetadata(song.title, song.artist)
         }
 
         val contentUri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, song.id)
@@ -241,86 +246,100 @@ fun FullScreenPlayer(
     val displayTitle = internetData?.title ?: song.title
     val displayArtist = internetData?.artist ?: song.artist
     val displayArt = internetData?.artUrl ?: song.albumArtUri
+    
+    // Toggle state for showing lyrics
+    var showLyrics by remember { mutableStateOf(false) }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            // THE WALL: This silently eats all taps and swipes, completely stopping scroll bleed
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null, 
-                onClick = {} 
-            )
+    // THE NUCLEAR WALL: Using a Surface with an opaque background completely blocks touches 
+    // from reaching the list underneath, no matter how fast the songs auto-play.
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
     ) {
-        AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(),
-            contentDescription = null, contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize().blur(radius = 60.dp).background(Color.Black.copy(alpha = 0.5f)) 
-        )
-
-        Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
-                IconButton(onClick = onClose) { Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Minimize", modifier = Modifier.size(36.dp), tint = Color.White) }
-            }
-            Spacer(modifier = Modifier.height(32.dp))
-
-            Card(modifier = Modifier.fillMaxWidth().aspectRatio(1f).shadow(24.dp, RoundedCornerShape(32.dp)), shape = RoundedCornerShape(32.dp)) {
-                AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(1000).build(),
-                    contentDescription = "Album Art", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)
-                )
-            }
-
-            Spacer(modifier = Modifier.height(48.dp))
-            Text(displayTitle, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1)
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(displayArtist, style = MaterialTheme.typography.titleMedium, color = Color.White.copy(alpha = 0.8f), maxLines = 1)
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            Slider(
-                value = if (totalDuration > 0) currentPosition.toFloat() / totalDuration.toFloat() else 0f, onValueChange = onSeek,
-                modifier = Modifier.fillMaxWidth(), colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color.White.copy(alpha = 0.3f))
+        Box(modifier = Modifier.fillMaxSize()) {
+            AsyncImage(
+                model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(),
+                contentDescription = null, contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize().blur(radius = 60.dp).background(Color.Black.copy(alpha = 0.6f)) 
             )
 
-            val formatTime = { ms: Long -> val totalSeconds = ms / 1000; String.format("%02d:%02d", totalSeconds / 60, totalSeconds % 60) }
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(formatTime(currentPosition), style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.7f))
-                Text(formatTime(totalDuration), style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.7f))
-            }
-
-            Spacer(modifier = Modifier.height(32.dp))
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceEvenly) {
-                IconButton(onClick = onPrev) { Icon(Icons.Default.SkipPrevious, contentDescription = "Prev", modifier = Modifier.size(48.dp), tint = Color.White) }
-                Box(modifier = Modifier.size(80.dp).clip(CircleShape).background(Color.White).clickable { onPlayPause() }, contentAlignment = Alignment.Center) {
-                    Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = "Play/Pause", modifier = Modifier.size(48.dp), tint = Color.Black)
+            Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onClose) { Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Minimize", modifier = Modifier.size(36.dp), tint = Color.White) }
+                    
+                    // Show lyrics toggle icon if lyrics exist
+                    if (internetData?.lyrics != null) {
+                        IconButton(onClick = { showLyrics = !showLyrics }) {
+                            Icon(if (showLyrics) Icons.Default.MusicNote else Icons.Default.Subject, contentDescription = "Toggle Lyrics", tint = Color.White)
+                        }
+                    }
                 }
-                IconButton(onClick = onNext) { Icon(Icons.Default.SkipNext, contentDescription = "Next", modifier = Modifier.size(48.dp), tint = Color.White) }
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // The Content Area: Flips between Album Art and Lyrics
+                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    if (showLyrics && internetData?.lyrics != null) {
+                        val scrollState = rememberScrollState()
+                        Text(
+                            text = internetData.lyrics,
+                            style = MaterialTheme.typography.titleMedium.copy(lineHeight = 28.dp),
+                            color = Color.White,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxSize().verticalScroll(scrollState).clickable { showLyrics = false }
+                        )
+                    } else {
+                        Card(modifier = Modifier.fillMaxWidth().aspectRatio(1f).shadow(24.dp, RoundedCornerShape(32.dp)).clickable { if (internetData?.lyrics != null) showLyrics = true }, shape = RoundedCornerShape(32.dp)) {
+                            AsyncImage(
+                                model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(1000).build(),
+                                contentDescription = "Album Art", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(32.dp))
+                Text(displayTitle, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1)
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(displayArtist, style = MaterialTheme.typography.titleMedium, color = Color.White.copy(alpha = 0.8f), maxLines = 1)
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                Slider(
+                    value = if (totalDuration > 0) currentPosition.toFloat() / totalDuration.toFloat() else 0f, onValueChange = onSeek,
+                    modifier = Modifier.fillMaxWidth(), colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color.White.copy(alpha = 0.3f))
+                )
+
+                val formatTime = { ms: Long -> val totalSeconds = ms / 1000; String.format("%02d:%02d", totalSeconds / 60, totalSeconds % 60) }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(formatTime(currentPosition), style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.7f))
+                    Text(formatTime(totalDuration), style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.7f))
+                }
+
+                Spacer(modifier = Modifier.height(32.dp))
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceEvenly) {
+                    IconButton(onClick = onPrev) { Icon(Icons.Default.SkipPrevious, contentDescription = "Prev", modifier = Modifier.size(48.dp), tint = Color.White) }
+                    Box(modifier = Modifier.size(80.dp).clip(CircleShape).background(Color.White).clickable { onPlayPause() }, contentAlignment = Alignment.Center) {
+                        Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = "Play/Pause", modifier = Modifier.size(48.dp), tint = Color.Black)
+                    }
+                    IconButton(onClick = onNext) { Icon(Icons.Default.SkipNext, contentDescription = "Next", modifier = Modifier.size(48.dp), tint = Color.White) }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
             }
-            Spacer(modifier = Modifier.height(32.dp))
         }
     }
 }
 
 @Composable
-fun PlayerControlsBar(
-    currentSong: LocalSong, internetData: InternetSongData?, isPlaying: Boolean, currentPosition: Long, totalDuration: Long,
-    onPlayPause: () -> Unit, onNext: () -> Unit, onPrev: () -> Unit, onBarClick: () -> Unit
-) {
+fun PlayerControlsBar(currentSong: LocalSong, internetData: InternetSongData?, isPlaying: Boolean, currentPosition: Long, totalDuration: Long, onPlayPause: () -> Unit, onNext: () -> Unit, onPrev: () -> Unit, onBarClick: () -> Unit) {
     val displayTitle = internetData?.title ?: currentSong.title
     val displayArtist = internetData?.artist ?: currentSong.artist
     val displayArt = internetData?.artUrl ?: currentSong.albumArtUri
 
-    Surface(
-        color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth().clickable { onBarClick() }, shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), shadowElevation = 8.dp
-    ) {
+    Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth().clickable { onBarClick() }, shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), shadowElevation = 8.dp) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             LinearProgressIndicator(progress = { if (totalDuration > 0) currentPosition.toFloat() / totalDuration.toFloat() else 0f }, modifier = Modifier.fillMaxWidth().height(2.dp), color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
             Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(),
-                    contentDescription = "Album Art", contentScale = ContentScale.Crop, modifier = Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
-                )
+                AsyncImage(model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(), contentDescription = "Album Art", contentScale = ContentScale.Crop, modifier = Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)))
                 Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(displayTitle, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary, maxLines = 1)
@@ -347,7 +366,6 @@ fun fetchLocalMusic(context: Context): List<LocalSong> {
     val songs = mutableListOf<LocalSong>()
     val uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
     val projection = arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST, MediaStore.Audio.Media.DATA, MediaStore.Audio.Media.ALBUM_ID)
-    
     val junkPattern = Regex("(?i)(.*\\d{8}.*|.*aud-.*|.*ptt-.*|.*wa00.*|.*record.*)")
 
     context.contentResolver.query(uri, projection, "${MediaStore.Audio.Media.IS_MUSIC} != 0", null, "${MediaStore.Audio.Media.TITLE} ASC")?.use { cursor ->
@@ -360,9 +378,7 @@ fun fetchLocalMusic(context: Context): List<LocalSong> {
         while (cursor.moveToNext()) {
             val title = cursor.getString(titleCol) ?: "Unknown"
             val path = cursor.getString(dataCol) ?: ""
-            
             if (title.matches(junkPattern) || path.matches(junkPattern)) continue 
-
             val artist = cursor.getString(artistCol) ?: "Unknown Artist"
             songs.add(LocalSong(cursor.getLong(idCol), title, artist, cursor.getLong(albumIdCol)))
         }
@@ -370,59 +386,68 @@ fun fetchLocalMusic(context: Context): List<LocalSong> {
     return songs
 }
 
-// Helper to actually make the network call
-private fun searchItunesAPI(query: String): InternetSongData? {
-    try {
-        val encodedQuery = URLEncoder.encode(query, "UTF-8")
-        val url = URL("https://itunes.apple.com/search?term=$encodedQuery&media=music&entity=song&limit=1")
-        
-        val connection = url.openConnection() as HttpURLConnection
-        connection.setRequestProperty("User-Agent", "Mozilla/5.0")
-        connection.connectTimeout = 3000
-        connection.readTimeout = 3000
+// =========================================================================
+// THE MULTI-SOURCE METADATA ENGINE (iTunes + LRCLIB)
+// =========================================================================
 
-        if (connection.responseCode == 200) {
-            val response = connection.inputStream.bufferedReader().readText()
-            val json = JSONObject(response)
-            val results = json.optJSONArray("results")
-            
-            if (results != null && results.length() > 0) {
-                val trackNode = results.getJSONObject(0)
-                val officialTitle = trackNode.optString("trackName", "")
-                val officialArtist = trackNode.optString("artistName", "")
-                val rawArt = trackNode.optString("artworkUrl100", "")
-                val highResArt = rawArt.replace("100x100bb", "600x600bb")
-                
-                return InternetSongData(officialTitle, officialArtist, highResArt)
-            }
-        }
-    } catch (e: Exception) { e.printStackTrace() }
-    return null
-}
-
-// Two-Stage Fallback Fetcher
-suspend fun fetchOfficialMetadata(title: String, artist: String): InternetSongData? = withContext(Dispatchers.IO) {
-    // Stage 1: Strip garbage tags
+suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSongData? = withContext(Dispatchers.IO) {
+    // 1. Keyword Generation - Strips garbage tags out of downloaded file names
     val cleanTitle = title.lowercase()
         .replace(".mp3", "").replace(".m4a", "").replace(".wav", "")
         .replace("y2mate.com", "").replace("y2mate", "")
         .replace("official video", "").replace("official audio", "")
         .replace("lyrics", "").replace("hd", "")
-        .replace(Regex("[^a-zA-Z0-9 ]"), " ") // Keep only letters/numbers
+        .replace(Regex("[^a-zA-Z0-9 ]"), " ") 
         .trim()
 
     val isUnknownArtist = artist.contains("unknown", ignoreCase = true)
     
-    // Attempt 1: Search using Title + Artist
-    var result: InternetSongData? = null
-    if (!isUnknownArtist) {
-        result = searchItunesAPI("$cleanTitle $artist")
-    }
+    // 2. Fetch Base Metadata from iTunes
+    var officialTitle = cleanTitle
+    var officialArtist = if (!isUnknownArtist) artist else ""
+    var highResArt = ""
 
-    // Attempt 2 (FALLBACK): If Attempt 1 failed (or artist is unknown), search with JUST the clean title
-    if (result == null) {
-        result = searchItunesAPI(cleanTitle)
-    }
+    val itunesQuery = URLEncoder.encode(if (!isUnknownArtist) "$cleanTitle $artist" else cleanTitle, "UTF-8")
+    try {
+        val url = URL("https://itunes.apple.com/search?term=$itunesQuery&media=music&entity=song&limit=1")
+        val conn = url.openConnection() as HttpURLConnection
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+        if (conn.responseCode == 200) {
+            val response = conn.inputStream.bufferedReader().readText()
+            val results = JSONObject(response).optJSONArray("results")
+            if (results != null && results.length() > 0) {
+                val trackNode = results.getJSONObject(0)
+                officialTitle = trackNode.optString("trackName", cleanTitle)
+                officialArtist = trackNode.optString("artistName", artist)
+                highResArt = trackNode.optString("artworkUrl100", "").replace("100x100bb", "600x600bb")
+            }
+        }
+    } catch (e: Exception) { e.printStackTrace() }
 
-    return@withContext result
+    // 3. Fetch Lyrics from LRCLIB using the cleaned official data
+    var fetchedLyrics: String? = null
+    try {
+        val lrcQuery = URLEncoder.encode("$officialTitle $officialArtist", "UTF-8")
+        val url = URL("https://lrclib.net/api/search?q=$lrcQuery")
+        val conn = url.openConnection() as HttpURLConnection
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+        if (conn.responseCode == 200) {
+            val response = conn.inputStream.bufferedReader().readText()
+            val jsonArray = JSONArray(response)
+            if (jsonArray.length() > 0) {
+                val firstResult = jsonArray.getJSONObject(0)
+                val plainLyrics = firstResult.optString("plainLyrics", "")
+                if (plainLyrics.isNotEmpty()) {
+                    fetchedLyrics = plainLyrics
+                }
+            }
+        }
+    } catch (e: Exception) { e.printStackTrace() }
+
+    // Return the combined multi-angle data
+    if (highResArt.isNotEmpty() || fetchedLyrics != null) {
+        return@withContext InternetSongData(officialTitle, officialArtist, highResArt, fetchedLyrics)
+    }
+    
+    return@withContext null
 }
