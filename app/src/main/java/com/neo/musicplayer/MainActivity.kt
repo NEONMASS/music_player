@@ -35,17 +35,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
-import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -76,6 +78,19 @@ fun AestheticTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composa
         lightColorScheme(primary = PastelLavenderLight, background = PastelBackgroundLight, surface = PastelSurfaceLight, onSurface = Color(0xFF4A4A4A))
     }
     MaterialTheme(colorScheme = colorScheme, content = content)
+}
+
+// --- The Beautiful Blue & White Fallback Art ---
+@Composable
+fun BlueWhiteFallback(modifier: Modifier = Modifier, iconSize: Dp = 48.dp) {
+    Box(
+        modifier = modifier.background(
+            Brush.linearGradient(listOf(Color(0xFF1976D2), Color(0xFFBBDEFB))) // Deep Blue to Soft White/Blue
+        ),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(Icons.Default.MusicNote, contentDescription = "Music", tint = Color.White.copy(alpha = 0.9f), modifier = Modifier.size(iconSize))
+    }
 }
 
 data class LocalSong(val id: Long, val title: String, val artist: String, val albumId: Long) {
@@ -206,9 +221,12 @@ fun MusicPlayerUI() {
                                     modifier = Modifier.clickable { playSong(song) }.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                        AsyncImage(
+                                        // Dynamic List Item Art
+                                        SubcomposeAsyncImage(
                                             model = song.albumArtUri, contentDescription = "Album Art", contentScale = ContentScale.Crop,
-                                            modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+                                            modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)),
+                                            error = { BlueWhiteFallback(modifier = Modifier.fillMaxSize(), iconSize = 24.dp) },
+                                            loading = { BlueWhiteFallback(modifier = Modifier.fillMaxSize(), iconSize = 24.dp) }
                                         )
                                         Spacer(modifier = Modifier.width(16.dp))
                                         Column {
@@ -246,7 +264,7 @@ fun FullScreenPlayer(
 ) {
     val displayTitle = internetData?.title ?: song.title
     val displayArtist = internetData?.artist ?: song.artist
-    val displayArt = internetData?.artUrl ?: song.albumArtUri
+    val displayArt = internetData?.artUrl?.takeIf { it.isNotEmpty() } ?: song.albumArtUri
     
     var showLyrics by remember { mutableStateOf(false) }
 
@@ -255,18 +273,14 @@ fun FullScreenPlayer(
         color = MaterialTheme.colorScheme.background
     ) {
         Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null, 
-                    onClick = {} 
-                )
+            modifier = Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {})
         ) {
-            AsyncImage(
+            // Blurred Background Art with Gradient Fallback
+            SubcomposeAsyncImage(
                 model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(),
                 contentDescription = null, contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize().blur(radius = 60.dp).background(Color.Black.copy(alpha = 0.6f)) 
+                modifier = Modifier.fillMaxSize().blur(radius = 60.dp).background(Color.Black.copy(alpha = 0.6f)),
+                error = { BlueWhiteFallback(modifier = Modifier.fillMaxSize()) }
             )
 
             Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -289,21 +303,16 @@ fun FullScreenPlayer(
                             style = MaterialTheme.typography.titleMedium.copy(lineHeight = 28.sp),
                             color = Color.White,
                             textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxSize().verticalScroll(scrollState).clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                onClick = { showLyrics = false }
-                            )
+                            modifier = Modifier.fillMaxSize().verticalScroll(scrollState).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = { showLyrics = false })
                         )
                     } else {
-                        Card(modifier = Modifier.fillMaxWidth().aspectRatio(1f).shadow(24.dp, RoundedCornerShape(32.dp)).clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = { if (internetData?.lyrics != null) showLyrics = true }
-                        ), shape = RoundedCornerShape(32.dp)) {
-                            AsyncImage(
+                        // Main Premium Album Art Display with Gradient Fallback
+                        Card(modifier = Modifier.fillMaxWidth().aspectRatio(1f).shadow(24.dp, RoundedCornerShape(32.dp)).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = { if (internetData?.lyrics != null) showLyrics = true }), shape = RoundedCornerShape(32.dp)) {
+                            SubcomposeAsyncImage(
                                 model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(1000).build(),
-                                contentDescription = "Album Art", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)
+                                contentDescription = "Album Art", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize(),
+                                error = { BlueWhiteFallback(modifier = Modifier.fillMaxSize(), iconSize = 80.dp) },
+                                loading = { BlueWhiteFallback(modifier = Modifier.fillMaxSize(), iconSize = 80.dp) }
                             )
                         }
                     }
@@ -345,13 +354,19 @@ fun FullScreenPlayer(
 fun PlayerControlsBar(currentSong: LocalSong, internetData: InternetSongData?, isPlaying: Boolean, currentPosition: Long, totalDuration: Long, onPlayPause: () -> Unit, onNext: () -> Unit, onPrev: () -> Unit, onBarClick: () -> Unit) {
     val displayTitle = internetData?.title ?: currentSong.title
     val displayArtist = internetData?.artist ?: currentSong.artist
-    val displayArt = internetData?.artUrl ?: currentSong.albumArtUri
+    val displayArt = internetData?.artUrl?.takeIf { it.isNotEmpty() } ?: currentSong.albumArtUri
 
     Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth().clickable { onBarClick() }, shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), shadowElevation = 8.dp) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             LinearProgressIndicator(progress = { if (totalDuration > 0) currentPosition.toFloat() / totalDuration.toFloat() else 0f }, modifier = Modifier.fillMaxWidth().height(2.dp), color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
             Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                AsyncImage(model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(), contentDescription = "Album Art", contentScale = ContentScale.Crop, modifier = Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)))
+                // Mini Player Art with Gradient Fallback
+                SubcomposeAsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(),
+                    contentDescription = "Album Art", contentScale = ContentScale.Crop, modifier = Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)),
+                    error = { BlueWhiteFallback(modifier = Modifier.fillMaxSize(), iconSize = 20.dp) },
+                    loading = { BlueWhiteFallback(modifier = Modifier.fillMaxSize(), iconSize = 20.dp) }
+                )
                 Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(displayTitle, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary, maxLines = 1)
@@ -420,10 +435,8 @@ private fun searchItunesAPI(query: String): InternetSongData? {
                 val trackNode = results.getJSONObject(0)
                 val officialTitle = trackNode.optString("trackName", "")
                 val officialArtist = trackNode.optString("artistName", "")
-                val rawArt = trackNode.optString("artworkUrl100", "")
-                val highResArt = rawArt.replace("100x100bb", "600x600bb")
-                
-                return InternetSongData(officialTitle, officialArtist, highResArt)
+                val rawArt = trackNode.optString("artworkUrl100", "").replace("100x100bb", "600x600bb")
+                return InternetSongData(officialTitle, officialArtist, rawArt)
             }
         }
     } catch (e: Exception) { e.printStackTrace() }
@@ -447,14 +460,43 @@ private fun searchDeezerAPI(query: String): InternetSongData? {
             if (data != null && data.length() > 0) {
                 val trackNode = data.getJSONObject(0)
                 val officialTitle = trackNode.optString("title", "")
-                
                 val artistNode = trackNode.optJSONObject("artist")
                 val officialArtist = artistNode?.optString("name", "") ?: ""
-                
                 val albumNode = trackNode.optJSONObject("album")
                 val highResArt = albumNode?.optString("cover_xl", "") ?: ""
-                
                 return InternetSongData(officialTitle, officialArtist, highResArt)
+            }
+        }
+    } catch (e: Exception) { e.printStackTrace() }
+    return null
+}
+
+// Helper to pull Lyrics
+private fun searchLyricsAPI(title: String, artist: String): String? {
+    try {
+        val query = if (artist.isNotBlank()) "$title $artist" else title
+        val encodedQuery = URLEncoder.encode(query, "UTF-8")
+        val url = URL("https://lrclib.net/api/search?q=$encodedQuery")
+        val conn = url.openConnection() as HttpURLConnection
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+        conn.connectTimeout = 3000
+        conn.readTimeout = 3000
+
+        if (conn.responseCode == 200) {
+            val response = conn.inputStream.bufferedReader().readText()
+            val jsonArray = JSONArray(response)
+            for (i in 0 until jsonArray.length()) {
+                val track = jsonArray.getJSONObject(i)
+                val plainLyrics = track.optString("plainLyrics", "")
+                val syncedLyrics = track.optString("syncedLyrics", "")
+
+                // Prioritize plain text
+                if (plainLyrics.isNotBlank() && plainLyrics != "null") return plainLyrics
+                
+                // Fallback: Strip the [00:12.34] timestamps out of synced lyrics
+                if (syncedLyrics.isNotBlank() && syncedLyrics != "null") {
+                    return syncedLyrics.replace(Regex("\\[.*?\\]"), "").trim()
+                }
             }
         }
     } catch (e: Exception) { e.printStackTrace() }
@@ -478,46 +520,38 @@ suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSon
     val isUnknownArtist = artist.contains("unknown", ignoreCase = true)
     var result: InternetSongData? = null
 
-    // Attempt 1: Fire Strict Matches at the EXACT SAME TIME
+    // 1. Race the Art APIs & Lyrics APIs concurrently
     val strictItunesTask = async(Dispatchers.IO) { if (!isUnknownArtist) searchItunesAPI("$cleanTitle $artist") else null }
     val strictDeezerTask = async(Dispatchers.IO) { if (!isUnknownArtist) searchDeezerAPI("$cleanTitle $artist") else null }
     
+    // Launch a strict lyrics search immediately
+    val strictLyricsTask = async(Dispatchers.IO) { searchLyricsAPI(cleanTitle, if (!isUnknownArtist) artist else "") }
+
     val strictItunesResult = strictItunesTask.await()
     val strictDeezerResult = strictDeezerTask.await()
+    var foundLyrics = strictLyricsTask.await()
     
     result = strictItunesResult ?: strictDeezerResult
 
-    // Attempt 2: If both failed, fire Loose Matches at the EXACT SAME TIME
+    // 2. If Art failed, try loose matching
     if (result == null) {
         val looseItunesTask = async(Dispatchers.IO) { searchItunesAPI(cleanTitle) }
         val looseDeezerTask = async(Dispatchers.IO) { searchDeezerAPI(cleanTitle) }
-        
-        val looseItunesResult = looseItunesTask.await()
-        val looseDeezerResult = looseDeezerTask.await()
-        
-        result = looseItunesResult ?: looseDeezerResult
+        result = looseItunesTask.await() ?: looseDeezerTask.await()
+    }
+    
+    // 3. If Lyrics failed on strict match, try loose matching
+    if (foundLyrics == null && !isUnknownArtist) {
+        foundLyrics = searchLyricsAPI(cleanTitle, "")
     }
 
-    // --- CONCURRENT LYRICS SEARCH ---
+    // Combine whatever we successfully found
     if (result != null) {
-        try {
-            val lrcQuery = URLEncoder.encode("${result.title} ${result.artist}", "UTF-8")
-            val url = URL("https://lrclib.net/api/search?q=$lrcQuery")
-            val conn = url.openConnection() as HttpURLConnection
-            conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-            
-            if (conn.responseCode == 200) {
-                val response = conn.inputStream.bufferedReader().readText()
-                val jsonArray = JSONArray(response)
-                if (jsonArray.length() > 0) {
-                    val plainLyrics = jsonArray.getJSONObject(0).optString("plainLyrics", "")
-                    if (plainLyrics.isNotEmpty()) {
-                        result = result.copy(lyrics = plainLyrics)
-                    }
-                }
-            }
-        } catch (e: Exception) { e.printStackTrace() }
+        return@coroutineScope result.copy(lyrics = foundLyrics)
+    } else if (foundLyrics != null) {
+        // Edge case: We only found lyrics but no album art, return just lyrics
+        return@coroutineScope InternetSongData(cleanTitle, artist, "", foundLyrics)
     }
 
-    return@coroutineScope result
+    return@coroutineScope null
 }
