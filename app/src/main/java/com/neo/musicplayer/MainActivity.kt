@@ -85,7 +85,7 @@ fun AestheticTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composa
 fun BlueWhiteFallback(modifier: Modifier = Modifier, iconSize: Dp = 48.dp) {
     Box(
         modifier = modifier.background(
-            Brush.linearGradient(listOf(Color(0xFF1976D2), Color(0xFFBBDEFB))) // Deep Blue to Soft White/Blue
+            Brush.linearGradient(listOf(Color(0xFF1976D2), Color(0xFFBBDEFB))) 
         ),
         contentAlignment = Alignment.Center
     ) {
@@ -221,7 +221,6 @@ fun MusicPlayerUI() {
                                     modifier = Modifier.clickable { playSong(song) }.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                        // Dynamic List Item Art
                                         SubcomposeAsyncImage(
                                             model = song.albumArtUri, contentDescription = "Album Art", contentScale = ContentScale.Crop,
                                             modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)),
@@ -275,8 +274,6 @@ fun FullScreenPlayer(
         Box(
             modifier = Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {})
         ) {
-            
-            // THE FIX: 'key' forces an instant redraw of the blur layer the exact millisecond the internet art arrives
             key(displayArt) {
                 SubcomposeAsyncImage(
                     model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(),
@@ -287,7 +284,6 @@ fun FullScreenPlayer(
                 )
             }
             
-            // Dedicated dark overlay so the text is always readable
             Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f)))
 
             Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -366,7 +362,6 @@ fun PlayerControlsBar(currentSong: LocalSong, internetData: InternetSongData?, i
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             LinearProgressIndicator(progress = { if (totalDuration > 0) currentPosition.toFloat() / totalDuration.toFloat() else 0f }, modifier = Modifier.fillMaxWidth().height(2.dp), color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
             Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                // Mini Player Art with Gradient Fallback
                 SubcomposeAsyncImage(
                     model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(),
                     contentDescription = "Album Art", contentScale = ContentScale.Crop, modifier = Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)),
@@ -420,14 +415,13 @@ fun fetchLocalMusic(context: Context): List<LocalSong> {
 }
 
 // =========================================================================
-// THE MULTI-SOURCE METADATA ENGINE (iTunes + Deezer + LRCLIB)
+// THE MULTI-SOURCE METADATA ENGINE (iTunes + Deezer + JioSaavn + YouTube + LRCLIB)
 // =========================================================================
 
 private fun searchItunesAPI(query: String): InternetSongData? {
     try {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val url = URL("https://itunes.apple.com/search?term=$encodedQuery&media=music&entity=song&limit=1")
-        
         val connection = url.openConnection() as HttpURLConnection
         connection.setRequestProperty("User-Agent", "Mozilla/5.0")
         connection.connectTimeout = 3000
@@ -436,7 +430,6 @@ private fun searchItunesAPI(query: String): InternetSongData? {
         if (connection.responseCode == 200) {
             val response = connection.inputStream.bufferedReader().readText()
             val results = JSONObject(response).optJSONArray("results")
-            
             if (results != null && results.length() > 0) {
                 val trackNode = results.getJSONObject(0)
                 val officialTitle = trackNode.optString("trackName", "")
@@ -453,7 +446,6 @@ private fun searchDeezerAPI(query: String): InternetSongData? {
     try {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val url = URL("https://api.deezer.com/search?q=$encodedQuery&limit=1")
-        
         val connection = url.openConnection() as HttpURLConnection
         connection.setRequestProperty("User-Agent", "Mozilla/5.0")
         connection.connectTimeout = 3000
@@ -462,7 +454,6 @@ private fun searchDeezerAPI(query: String): InternetSongData? {
         if (connection.responseCode == 200) {
             val response = connection.inputStream.bufferedReader().readText()
             val data = JSONObject(response).optJSONArray("data")
-            
             if (data != null && data.length() > 0) {
                 val trackNode = data.getJSONObject(0)
                 val officialTitle = trackNode.optString("title", "")
@@ -477,7 +468,64 @@ private fun searchDeezerAPI(query: String): InternetSongData? {
     return null
 }
 
-// Helper to pull Lyrics
+private fun searchJioSaavnAPI(query: String): InternetSongData? {
+    try {
+        val encodedQuery = URLEncoder.encode(query, "UTF-8")
+        val url = URL("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&query=$encodedQuery")
+        val connection = url.openConnection() as HttpURLConnection
+        connection.setRequestProperty("User-Agent", "Mozilla/5.0")
+        connection.connectTimeout = 3000
+        connection.readTimeout = 3000
+
+        if (connection.responseCode == 200) {
+            val response = connection.inputStream.bufferedReader().readText()
+            val json = JSONObject(response)
+            val songsArray = json.optJSONObject("songs")?.optJSONArray("data")
+            
+            if (songsArray != null && songsArray.length() > 0) {
+                val trackNode = songsArray.getJSONObject(0)
+                val officialTitle = trackNode.optString("title", "").replace("&quot;", "\"").replace("&amp;", "&")
+                val moreInfo = trackNode.optJSONObject("more_info")
+                val officialArtist = moreInfo?.optString("singers", "") ?: moreInfo?.optString("primary_artists", "") ?: ""
+                val rawArt = trackNode.optString("image", "")
+                val highResArt = rawArt.replace("50x50.jpg", "500x500.jpg")
+                
+                return InternetSongData(officialTitle, officialArtist, highResArt)
+            }
+        }
+    } catch (e: Exception) { e.printStackTrace() }
+    return null
+}
+
+private fun searchYouTubePipedAPI(query: String): InternetSongData? {
+    try {
+        val encodedQuery = URLEncoder.encode(query, "UTF-8")
+        val url = URL("https://pipedapi.kavin.rocks/search?q=$encodedQuery&filter=all")
+        val connection = url.openConnection() as HttpURLConnection
+        connection.setRequestProperty("User-Agent", "Mozilla/5.0")
+        connection.connectTimeout = 4000
+        connection.readTimeout = 4000
+
+        if (connection.responseCode == 200) {
+            val response = connection.inputStream.bufferedReader().readText()
+            val items = JSONObject(response).optJSONArray("items")
+            
+            if (items != null && items.length() > 0) {
+                for (i in 0 until items.length()) {
+                    val trackNode = items.getJSONObject(i)
+                    if (trackNode.optString("type") == "stream") {
+                        val officialTitle = trackNode.optString("title", "")
+                        val officialArtist = trackNode.optString("uploaderName", "")
+                        val highResArt = trackNode.optString("thumbnail", "")
+                        return InternetSongData(officialTitle, officialArtist, highResArt)
+                    }
+                }
+            }
+        }
+    } catch (e: Exception) { e.printStackTrace() }
+    return null
+}
+
 private fun searchLyricsAPI(title: String, artist: String): String? {
     try {
         val query = if (artist.isNotBlank()) "$title $artist" else title
@@ -496,10 +544,7 @@ private fun searchLyricsAPI(title: String, artist: String): String? {
                 val plainLyrics = track.optString("plainLyrics", "")
                 val syncedLyrics = track.optString("syncedLyrics", "")
 
-                // Prioritize plain text
                 if (plainLyrics.isNotBlank() && plainLyrics != "null") return plainLyrics
-                
-                // Fallback: Strip the [00:12.34] timestamps out of synced lyrics
                 if (syncedLyrics.isNotBlank() && syncedLyrics != "null") {
                     return syncedLyrics.replace(Regex("\\[.*?\\]"), "").trim()
                 }
@@ -509,7 +554,7 @@ private fun searchLyricsAPI(title: String, artist: String): String? {
     return null
 }
 
-// The Concurrent Dragnet Fetcher
+// The Concurrent 4-Way Dragnet Fetcher
 suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSongData? = coroutineScope {
     val cleanTitle = title.lowercase()
         .replace(".mp3", "").replace(".m4a", "").replace(".wav", "")
@@ -528,22 +573,27 @@ suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSon
 
     // 1. Race the Art APIs & Lyrics APIs concurrently
     val strictItunesTask = async(Dispatchers.IO) { if (!isUnknownArtist) searchItunesAPI("$cleanTitle $artist") else null }
+    val strictSaavnTask = async(Dispatchers.IO) { if (!isUnknownArtist) searchJioSaavnAPI("$cleanTitle $artist") else null }
     val strictDeezerTask = async(Dispatchers.IO) { if (!isUnknownArtist) searchDeezerAPI("$cleanTitle $artist") else null }
+    val strictYoutubeTask = async(Dispatchers.IO) { if (!isUnknownArtist) searchYouTubePipedAPI("$cleanTitle $artist") else null }
     
-    // Launch a strict lyrics search immediately
     val strictLyricsTask = async(Dispatchers.IO) { searchLyricsAPI(cleanTitle, if (!isUnknownArtist) artist else "") }
 
-    val strictItunesResult = strictItunesTask.await()
-    val strictDeezerResult = strictDeezerTask.await()
+    result = strictItunesTask.await() 
+        ?: strictSaavnTask.await() 
+        ?: strictDeezerTask.await() 
+        ?: strictYoutubeTask.await()
+        
     var foundLyrics = strictLyricsTask.await()
-    
-    result = strictItunesResult ?: strictDeezerResult
 
     // 2. If Art failed, try loose matching
     if (result == null) {
         val looseItunesTask = async(Dispatchers.IO) { searchItunesAPI(cleanTitle) }
+        val looseSaavnTask = async(Dispatchers.IO) { searchJioSaavnAPI(cleanTitle) }
         val looseDeezerTask = async(Dispatchers.IO) { searchDeezerAPI(cleanTitle) }
-        result = looseItunesTask.await() ?: looseDeezerTask.await()
+        val looseYoutubeTask = async(Dispatchers.IO) { searchYouTubePipedAPI(cleanTitle) }
+        
+        result = looseItunesTask.await() ?: looseSaavnTask.await() ?: looseDeezerTask.await() ?: looseYoutubeTask.await()
     }
     
     // 3. If Lyrics failed on strict match, try loose matching
@@ -555,7 +605,6 @@ suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSon
     if (result != null) {
         return@coroutineScope result.copy(lyrics = foundLyrics)
     } else if (foundLyrics != null) {
-        // Edge case: We only found lyrics but no album art, return just lyrics
         return@coroutineScope InternetSongData(cleanTitle, artist, "", foundLyrics)
     }
 
