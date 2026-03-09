@@ -17,6 +17,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -32,9 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -76,7 +75,6 @@ data class LocalSong(val id: Long, val title: String, val artist: String, val al
     val albumArtUri: Uri get() = Uri.parse("content://media/external/audio/albumart/$albumId")
 }
 
-// New Data Class to hold the official internet metadata
 data class InternetSongData(val title: String, val artist: String, val artUrl: String)
 
 class MainActivity : ComponentActivity() {
@@ -101,31 +99,26 @@ fun MusicPlayerUI() {
     var fetchedInternetData by remember { mutableStateOf<InternetSongData?>(null) } 
     
     var isPlaying by remember { mutableStateOf(false) }
+    var playbackState by remember { mutableStateOf(Player.STATE_IDLE) }
     var currentPosition by remember { mutableStateOf(0L) }
     var totalDuration by remember { mutableStateOf(0L) }
     var showFullScreenPlayer by remember { mutableStateOf(false) }
 
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
-            addListener(object : Player.Listener { override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing } })
+            addListener(object : Player.Listener { 
+                override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
+                override fun onPlaybackStateChanged(state: Int) { playbackState = state }
+            })
         }
     }
 
     DisposableEffect(Unit) { onDispose { exoPlayer.release() } }
 
-    LaunchedEffect(isPlaying) {
-        while (isPlaying) {
-            currentPosition = exoPlayer.currentPosition
-            totalDuration = if (exoPlayer.duration > 0) exoPlayer.duration else 0L
-            delay(1000L)
-        }
-    }
-
     val playSong = { song: LocalSong ->
         currentSong = song
-        fetchedInternetData = null // Reset internet data for the new song
+        fetchedInternetData = null 
         
-        // Fetch High-Res Internet Art and Official Details in the background
         coroutineScope.launch {
             fetchedInternetData = fetchOfficialMetadata(song.title, song.artist)
         }
@@ -134,6 +127,24 @@ fun MusicPlayerUI() {
         exoPlayer.setMediaItem(MediaItem.fromUri(contentUri))
         exoPlayer.prepare()
         exoPlayer.play()
+    }
+
+    // Zero-Delay Auto-Play Next Track
+    LaunchedEffect(playbackState) {
+        if (playbackState == Player.STATE_ENDED && currentSong != null) {
+            val index = localSongs.indexOf(currentSong)
+            if (index in 0 until localSongs.size - 1) {
+                playSong(localSongs[index + 1])
+            }
+        }
+    }
+
+    LaunchedEffect(isPlaying) {
+        while (isPlaying) {
+            currentPosition = exoPlayer.currentPosition
+            totalDuration = if (exoPlayer.duration > 0) exoPlayer.duration else 0L
+            delay(1000L)
+        }
     }
 
     val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
@@ -227,7 +238,6 @@ fun FullScreenPlayer(
     song: LocalSong, internetData: InternetSongData?, isPlaying: Boolean, currentPosition: Long, totalDuration: Long,
     onClose: () -> Unit, onPlayPause: () -> Unit, onNext: () -> Unit, onPrev: () -> Unit, onSeek: (Float) -> Unit
 ) {
-    // Determine which data to show (Internet Data preferred over Local Data)
     val displayTitle = internetData?.title ?: song.title
     val displayArtist = internetData?.artist ?: song.artist
     val displayArt = internetData?.artUrl ?: song.albumArtUri
@@ -235,7 +245,12 @@ fun FullScreenPlayer(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(Unit) {} // <-- This completely blocks touch bleed-through to the background list
+            // THE WALL: This silently eats all taps and swipes, completely stopping scroll bleed
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null, 
+                onClick = {} 
+            )
     ) {
         AsyncImage(
             model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(),
@@ -257,7 +272,6 @@ fun FullScreenPlayer(
             }
 
             Spacer(modifier = Modifier.height(48.dp))
-            // Dynamically updating Title and Artist based on internet fetch
             Text(displayTitle, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1)
             Spacer(modifier = Modifier.height(8.dp))
             Text(displayArtist, style = MaterialTheme.typography.titleMedium, color = Color.White.copy(alpha = 0.8f), maxLines = 1)
@@ -356,24 +370,11 @@ fun fetchLocalMusic(context: Context): List<LocalSong> {
     return songs
 }
 
-// Upgraded API fetcher: Cleans keywords, parses JSON, returns Title, Artist, and Art
-suspend fun fetchOfficialMetadata(title: String, artist: String): InternetSongData? = withContext(Dispatchers.IO) {
+// Helper to actually make the network call
+private fun searchItunesAPI(query: String): InternetSongData? {
     try {
-        // 1. Keyword Generation - Strips garbage tags out of downloaded file names
-        var cleanTerm = title.lowercase()
-            .replace(".mp3", "").replace(".m4a", "").replace(".wav", "")
-            .replace("y2mate.com", "").replace("y2mate", "")
-            .replace("official video", "").replace("official audio", "")
-            .replace("lyrics", "").replace("hd", "")
-            .replace(Regex("[^a-zA-Z0-9 ]"), " ") // Remove weird symbols
-            .trim()
-            
-        if (!artist.contains("unknown", ignoreCase = true)) {
-            cleanTerm = "$cleanTerm $artist"
-        }
-
-        val query = URLEncoder.encode(cleanTerm, "UTF-8")
-        val url = URL("https://itunes.apple.com/search?term=$query&media=music&entity=song&limit=1")
+        val encodedQuery = URLEncoder.encode(query, "UTF-8")
+        val url = URL("https://itunes.apple.com/search?term=$encodedQuery&media=music&entity=song&limit=1")
         
         val connection = url.openConnection() as HttpURLConnection
         connection.setRequestProperty("User-Agent", "Mozilla/5.0")
@@ -382,23 +383,46 @@ suspend fun fetchOfficialMetadata(title: String, artist: String): InternetSongDa
 
         if (connection.responseCode == 200) {
             val response = connection.inputStream.bufferedReader().readText()
-            
-            // 2. Safely parse the JSON response
             val json = JSONObject(response)
             val results = json.optJSONArray("results")
             
             if (results != null && results.length() > 0) {
                 val trackNode = results.getJSONObject(0)
-                
-                // Extract official data
-                val officialTitle = trackNode.optString("trackName", title)
-                val officialArtist = trackNode.optString("artistName", artist)
+                val officialTitle = trackNode.optString("trackName", "")
+                val officialArtist = trackNode.optString("artistName", "")
                 val rawArt = trackNode.optString("artworkUrl100", "")
                 val highResArt = rawArt.replace("100x100bb", "600x600bb")
                 
-                return@withContext InternetSongData(officialTitle, officialArtist, highResArt)
+                return InternetSongData(officialTitle, officialArtist, highResArt)
             }
         }
     } catch (e: Exception) { e.printStackTrace() }
-    null
+    return null
+}
+
+// Two-Stage Fallback Fetcher
+suspend fun fetchOfficialMetadata(title: String, artist: String): InternetSongData? = withContext(Dispatchers.IO) {
+    // Stage 1: Strip garbage tags
+    val cleanTitle = title.lowercase()
+        .replace(".mp3", "").replace(".m4a", "").replace(".wav", "")
+        .replace("y2mate.com", "").replace("y2mate", "")
+        .replace("official video", "").replace("official audio", "")
+        .replace("lyrics", "").replace("hd", "")
+        .replace(Regex("[^a-zA-Z0-9 ]"), " ") // Keep only letters/numbers
+        .trim()
+
+    val isUnknownArtist = artist.contains("unknown", ignoreCase = true)
+    
+    // Attempt 1: Search using Title + Artist
+    var result: InternetSongData? = null
+    if (!isUnknownArtist) {
+        result = searchItunesAPI("$cleanTitle $artist")
+    }
+
+    // Attempt 2 (FALLBACK): If Attempt 1 failed (or artist is unknown), search with JUST the clean title
+    if (result == null) {
+        result = searchItunesAPI(cleanTitle)
+    }
+
+    return@withContext result
 }
