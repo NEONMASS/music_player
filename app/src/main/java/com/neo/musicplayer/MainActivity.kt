@@ -275,13 +275,20 @@ fun FullScreenPlayer(
         Box(
             modifier = Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {})
         ) {
-            // Blurred Background Art with Gradient Fallback
-            SubcomposeAsyncImage(
-                model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(),
-                contentDescription = null, contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize().blur(radius = 60.dp).background(Color.Black.copy(alpha = 0.6f)),
-                error = { BlueWhiteFallback(modifier = Modifier.fillMaxSize()) }
-            )
+            
+            // THE FIX: 'key' forces an instant redraw of the blur layer the exact millisecond the internet art arrives
+            key(displayArt) {
+                SubcomposeAsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(),
+                    contentDescription = null, contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize().blur(radius = 60.dp),
+                    error = { BlueWhiteFallback(modifier = Modifier.fillMaxSize()) },
+                    loading = { BlueWhiteFallback(modifier = Modifier.fillMaxSize()) }
+                )
+            }
+            
+            // Dedicated dark overlay so the text is always readable
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f)))
 
             Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -306,7 +313,6 @@ fun FullScreenPlayer(
                             modifier = Modifier.fillMaxSize().verticalScroll(scrollState).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = { showLyrics = false })
                         )
                     } else {
-                        // Main Premium Album Art Display with Gradient Fallback
                         Card(modifier = Modifier.fillMaxWidth().aspectRatio(1f).shadow(24.dp, RoundedCornerShape(32.dp)).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = { if (internetData?.lyrics != null) showLyrics = true }), shape = RoundedCornerShape(32.dp)) {
                             SubcomposeAsyncImage(
                                 model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(1000).build(),
