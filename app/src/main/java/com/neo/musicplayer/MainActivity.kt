@@ -339,18 +339,53 @@ fun fetchLocalMusic(context: Context): List<LocalSong> {
 
 suspend fun getInternetAlbumArt(title: String, artist: String): String? = withContext(Dispatchers.IO) {
     try {
-        val query = URLEncoder.encode("$title $artist", "UTF-8")
-        val url = URL("https://itunes.apple.com/search?term=$query&media=music&limit=1")
-        val connection = url.openConnection() as HttpURLConnection
-        val response = connection.inputStream.bufferedReader().readText()
-        
-        val artworkIndex = response.indexOf("\"artworkUrl100\":\"")
-        if (artworkIndex != -1) {
-            val start = artworkIndex + 17
-            val end = response.indexOf("\"", start)
-            val smallUrl = response.substring(start, end)
-            return@withContext smallUrl.replace("100x100bb", "600x600bb") 
+        // 1. Clean the Metadata
+        // Remove common file extensions that ruin search results
+        var cleanTitle = title.replace(".mp3", "", ignoreCase = true)
+            .replace(".m4a", "", ignoreCase = true)
+            .replace(".wav", "", ignoreCase = true)
+            .trim()
+            
+        // Ignore the artist if the Android OS flagged it as unknown
+        var cleanArtist = artist
+        if (cleanArtist.contains("unknown", ignoreCase = true) || cleanArtist.contains("<unknown>")) {
+            cleanArtist = "" 
         }
-    } catch (e: Exception) { e.printStackTrace() }
+
+        // Build a smart search query
+        val searchTerm = if (cleanArtist.isNotEmpty()) "$cleanTitle $cleanArtist" else cleanTitle
+        val query = URLEncoder.encode(searchTerm, "UTF-8")
+        
+        val urlString = "https://itunes.apple.com/search?term=$query&media=music&entity=song&limit=1"
+        println("MusicPlayer API: Searching -> $urlString") // Prints to Logcat so you can debug it
+        
+        val url = URL(urlString)
+        val connection = url.openConnection() as HttpURLConnection
+        
+        // 2. Pretend to be a browser so Apple doesn't block the request
+        connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        connection.connectTimeout = 5000
+        connection.readTimeout = 5000
+
+        // 3. Process the response
+        if (connection.responseCode == 200) {
+            val response = connection.inputStream.bufferedReader().readText()
+            
+            // Extract the 100x100 artwork URL
+            val artworkIndex = response.indexOf("\"artworkUrl100\":\"")
+            if (artworkIndex != -1) {
+                val start = artworkIndex + 17
+                val end = response.indexOf("\"", start)
+                val smallUrl = response.substring(start, end)
+                
+                // Upgrade it to crisp 600x600 resolution
+                return@withContext smallUrl.replace("100x100bb", "600x600bb") 
+            }
+        } else {
+            println("MusicPlayer API: Request failed with code ${connection.responseCode}")
+        }
+    } catch (e: Exception) { 
+        println("MusicPlayer API Error: ${e.message}")
+    }
     null
 }
