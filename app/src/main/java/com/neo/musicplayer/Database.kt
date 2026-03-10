@@ -5,7 +5,7 @@ import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 
 // ============================================================================
-// 1. THE SONG VAULT (Upgraded with Favorites!)
+// 1. THE SONG VAULT (Upgraded with Play History!)
 // ============================================================================
 @Entity(tableName = "saved_songs")
 data class SongEntity(
@@ -16,7 +16,8 @@ data class SongEntity(
     val fetchedArtist: String?,  
     val fetchedArtUrl: String?,
     val fetchedLyrics: String?,
-    val isFavorite: Boolean = false // NEW: The Liked Songs flag!
+    val isFavorite: Boolean = false,
+    val lastPlayedAt: Long = 0L // NEW: Tracks history for the Home Dashboard
 )
 
 @Entity(tableName = "playlists")
@@ -57,14 +58,20 @@ interface LibraryDao {
     @Query("SELECT * FROM saved_songs")
     fun getAllSongMemories(): Flow<List<SongEntity>>
 
-    // NEW: Instantly toggle the heart button status!
     @Query("UPDATE saved_songs SET isFavorite = :isFavorite WHERE localMediaId = :id")
     suspend fun updateFavoriteStatus(id: Long, isFavorite: Boolean)
 
-    // NEW: Quickly grab all favorite songs for a dedicated Playlist screen
     @Query("SELECT * FROM saved_songs WHERE isFavorite = 1")
     fun getFavoriteSongs(): Flow<List<SongEntity>>
 
+    // --- NEW: HISTORY & DASHBOARD COMMANDS ---
+    @Query("UPDATE saved_songs SET lastPlayedAt = :timestamp WHERE localMediaId = :id")
+    suspend fun updateLastPlayed(id: Long, timestamp: Long)
+
+    @Query("SELECT * FROM saved_songs WHERE lastPlayedAt > 0 ORDER BY lastPlayedAt DESC LIMIT 15")
+    fun getRecentlyPlayed(): Flow<List<SongEntity>>
+
+    // --- NEW: PLAYLIST COMMANDS ---
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun createPlaylist(playlist: PlaylistEntity): Long
 
@@ -84,7 +91,7 @@ interface LibraryDao {
 // ============================================================================
 @Database(
     entities = [SongEntity::class, PlaylistEntity::class, PlaylistSongCrossRef::class],
-    version = 3, // THE CRASH FIX: Bumped to 3 to safely add the Favorite column
+    version = 4, // THE CRASH FIX: Bumped to 4 to add Play History tracking
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -101,7 +108,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "hybrid_player_database"
                 )
-                .fallbackToDestructiveMigration() // Safely handles V2 -> V3
+                .fallbackToDestructiveMigration()
                 .build()
                 INSTANCE = instance
                 instance
