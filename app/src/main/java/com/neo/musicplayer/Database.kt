@@ -5,20 +5,19 @@ import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 
 // ============================================================================
-// 1. THE SONG VAULT (The Offline Cache & Self-Healing Memory)
+// 1. THE SONG VAULT (Upgraded to hold fetched official names!)
 // ============================================================================
 @Entity(tableName = "saved_songs")
 data class SongEntity(
     @PrimaryKey val localMediaId: Long,
     val customTitle: String?,
     val customArtist: String?,
+    val fetchedTitle: String?,   // NEW: Saves the official internet title
+    val fetchedArtist: String?,  // NEW: Saves the official internet artist
     val fetchedArtUrl: String?,
     val fetchedLyrics: String?
 )
 
-// ============================================================================
-// 2. THE PLAYLIST LEDGER
-// ============================================================================
 @Entity(tableName = "playlists")
 data class PlaylistEntity(
     @PrimaryKey(autoGenerate = true) val playlistId: Long = 0,
@@ -26,10 +25,6 @@ data class PlaylistEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
-// ============================================================================
-// 3. THE BRIDGE (Many-to-Many Relationship)
-// ============================================================================
-// THE FIX: Added `indices` to prevent the Room compiler warning and speed up queries
 @Entity(
     tableName = "playlist_song_cross_ref",
     primaryKeys = ["playlistId", "localMediaId"],
@@ -40,9 +35,6 @@ data class PlaylistSongCrossRef(
     val localMediaId: Long
 )
 
-// ============================================================================
-// 4. THE RELATIONAL QUERY MODEL
-// ============================================================================
 data class PlaylistWithSongs(
     @Embedded val playlist: PlaylistEntity,
     @Relation(
@@ -53,9 +45,6 @@ data class PlaylistWithSongs(
     val songs: List<SongEntity>
 )
 
-// ============================================================================
-// 5. THE DAO (Data Access Object)
-// ============================================================================
 @Dao
 interface LibraryDao {
     @Query("SELECT * FROM saved_songs WHERE localMediaId = :id LIMIT 1")
@@ -64,7 +53,6 @@ interface LibraryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun saveSongMemory(song: SongEntity)
 
-    // THE FIX: The missing streaming function that the UI was looking for!
     @Query("SELECT * FROM saved_songs")
     fun getAllSongMemories(): Flow<List<SongEntity>>
 
@@ -87,7 +75,7 @@ interface LibraryDao {
 // ============================================================================
 @Database(
     entities = [SongEntity::class, PlaylistEntity::class, PlaylistSongCrossRef::class],
-    version = 1,
+    version = 2, // THE CRASH FIX: Bumping this to 2 tells Android to safely migrate instead of crashing!
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -104,7 +92,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "hybrid_player_database"
                 )
-                .fallbackToDestructiveMigration()
+                .fallbackToDestructiveMigration() // Safely handles the Version 1 -> Version 2 transition
                 .build()
                 INSTANCE = instance
                 instance

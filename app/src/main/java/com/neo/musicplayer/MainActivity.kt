@@ -63,11 +63,9 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 
-// --- Aesthetic Pastel Theme Colors ---
 private val PastelLavenderLight = Color(0xFFB39DDB)
 private val PastelBackgroundLight = Color(0xFFFDFBFD) 
 private val PastelSurfaceLight = Color(0xFFF4EFFC)
-
 private val PastelLavenderDark = Color(0xFFD1B3FF) 
 private val PastelBackgroundDark = Color(0xFF1E1E2E) 
 private val PastelSurfaceDark = Color(0xFF2A2A3C) 
@@ -85,9 +83,7 @@ fun AestheticTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composa
 @Composable
 fun BlueWhiteFallback(modifier: Modifier = Modifier, iconSize: Dp = 48.dp) {
     Box(
-        modifier = modifier.background(
-            Brush.linearGradient(listOf(Color(0xFF1976D2), Color(0xFFBBDEFB))) 
-        ),
+        modifier = modifier.background(Brush.linearGradient(listOf(Color(0xFF1976D2), Color(0xFFBBDEFB)))),
         contentAlignment = Alignment.Center
     ) {
         Icon(Icons.Default.MusicNote, contentDescription = "Music", tint = Color.White.copy(alpha = 0.9f), modifier = Modifier.size(iconSize))
@@ -114,9 +110,7 @@ fun MusicPlayerUI() {
     val coroutineScope = rememberCoroutineScope()
     val db = remember { AppDatabase.getDatabase(context).libraryDao() }
     
-    // THE FIX: Listen to the entire Room database continuously.
     val songMemories by db.getAllSongMemories().collectAsState(initial = emptyList())
-    // Create a fast lookup map so the list can instantly find its memory
     val memoryMap = remember(songMemories) { songMemories.associateBy { it.localMediaId } }
     
     var isSearchActive by remember { mutableStateOf(false) }
@@ -150,27 +144,37 @@ fun MusicPlayerUI() {
         
         coroutineScope.launch {
             val memory = db.getSongMemory(song.id)
-            val searchTitle = memory?.customTitle?.takeIf { it.isNotBlank() } ?: song.title
-            val searchArtist = memory?.customArtist?.takeIf { it.isNotBlank() } ?: song.artist
+            
+            // THE FIX: The UI now prioritizes: Custom Edit -> Fetched Official Name -> Raw File Name
+            val displayTitle = memory?.customTitle?.takeIf { it.isNotBlank() } ?: memory?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title
+            val displayArtist = memory?.customArtist?.takeIf { it.isNotBlank() } ?: memory?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist
 
-            // THE FIX: Instantly lock in the user's edits into the UI, even before the internet search starts.
             fetchedInternetData = InternetSongData(
-                title = searchTitle,
-                artist = searchArtist,
+                title = displayTitle,
+                artist = displayArtist,
                 artUrl = memory?.fetchedArtUrl ?: "",
                 lyrics = memory?.fetchedLyrics
             )
 
-            // Only run the heavy Dragnet if we don't already have premium art saved
+            // If we don't have offline art saved, fire the Dragnet
             if (memory?.fetchedArtUrl == null) {
+                // Dragnet searches using the custom edit, or the raw file name if no edit exists
+                val searchTitle = memory?.customTitle?.takeIf { it.isNotBlank() } ?: song.title
+                val searchArtist = memory?.customArtist?.takeIf { it.isNotBlank() } ?: song.artist
+                
                 val result = fetchMultiSourceMetadata(searchTitle, searchArtist)
+                
                 if (result != null) {
                     fetchedInternetData = result 
+                    
+                    // THE FIX: We now save the 'result.title' and 'result.artist' into the Vault!
                     db.saveSongMemory(
                         SongEntity(
                             localMediaId = song.id,
                             customTitle = memory?.customTitle,
                             customArtist = memory?.customArtist,
+                            fetchedTitle = result.title,    
+                            fetchedArtist = result.artist,  
                             fetchedArtUrl = result.artUrl,
                             fetchedLyrics = result.lyrics
                         )
@@ -249,10 +253,10 @@ fun MusicPlayerUI() {
                     LazyColumn(modifier = Modifier.fillMaxSize()) {
                         items(localSongs) { song ->
                             
-                            // THE FIX: The List item checks the memory map dynamically!
                             val mem = memoryMap[song.id]
-                            val displayTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: song.title
-                            val displayArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: song.artist
+                            // The Background list now respects the fetched official names too!
+                            val displayTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title
+                            val displayArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist
                             val displayArt = mem?.fetchedArtUrl?.takeIf { it.isNotBlank() } ?: song.albumArtUri
 
                             Card(
@@ -317,11 +321,12 @@ fun MusicPlayerUI() {
                 confirmButton = {
                     Button(onClick = {
                         coroutineScope.launch {
-                            // Save user edits and explicitly wipe the old network cache
                             db.saveSongMemory(SongEntity(
                                 localMediaId = songToEdit!!.id,
                                 customTitle = editTitle.trim().takeIf { it.isNotEmpty() },
                                 customArtist = editArtist.trim().takeIf { it.isNotEmpty() },
+                                fetchedTitle = null, // Wipe the old fetched names
+                                fetchedArtist = null,
                                 fetchedArtUrl = null, 
                                 fetchedLyrics = null  
                             ))
@@ -491,10 +496,6 @@ fun fetchLocalMusic(context: Context): List<LocalSong> {
     }
     return songs
 }
-
-// =========================================================================
-// THE MULTI-SOURCE METADATA ENGINE (iTunes + Deezer + JioSaavn + YouTube + LRCLIB)
-// =========================================================================
 
 private fun searchItunesAPI(query: String): InternetSongData? {
     try {
