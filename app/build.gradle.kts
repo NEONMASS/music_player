@@ -1,10 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
-    alias(libs.plugins.kotlin.compose)
-    kotlin("kapt") // ADD THIS LINE: Allows Kotlin to generate database code
+    kotlin("kapt") // Allows Kotlin to generate database code
 }
 
 android {
@@ -46,12 +43,15 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material:material-icons-extended")
-// Coil for loading Album Art
+
+    // Coil for loading Album Art
     implementation("io.coil-kt:coil-compose:2.6.0")
-    // Room (Local SQLite Database)
+
+    // Phase 2: Room (Local SQLite Database)
     val roomVersion = "2.6.1"
     implementation("androidx.room:room-runtime:$roomVersion")
     implementation("androidx.room:room-ktx:$roomVersion")
+    kapt("androidx.room:room-compiler:$roomVersion")
 
     // Jsoup (Web Scraper)
     implementation("org.jsoup:jsoup:1.17.2")
@@ -64,10 +64,4 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:$media3Version")
     implementation("androidx.media3:media3-session:$media3Version")
     implementation("androidx.media3:media3-ui:$media3Version")
-
-    // Phase 2: Room Database
-    val room_version = "2.6.1"
-    implementation("androidx.room:room-runtime:$room_version")
-    implementation("androidx.room:room-ktx:$room_version")
-    kapt("androidx.room:room-compiler:$room_version")
 }
