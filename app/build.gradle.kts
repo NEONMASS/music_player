@@ -4,7 +4,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    id("kotlin-kapt") // ADD THIS LINE: Allows Kotlin to generate database code
+    kotlin("kapt") // ADD THIS LINE: Allows Kotlin to generate database code
 }
 
 android {
@@ -64,4 +64,10 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:$media3Version")
     implementation("androidx.media3:media3-session:$media3Version")
     implementation("androidx.media3:media3-ui:$media3Version")
+
+    // Phase 2: Room Database
+    val room_version = "2.6.1"
+    implementation("androidx.room:room-runtime:$room_version")
+    implementation("androidx.room:room-ktx:$room_version")
+    kapt("androidx.room:room-compiler:$room_version")
 }
