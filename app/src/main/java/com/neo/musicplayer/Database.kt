@@ -9,11 +9,11 @@ import kotlinx.coroutines.flow.Flow
 // ============================================================================
 @Entity(tableName = "saved_songs")
 data class SongEntity(
-    @PrimaryKey val localMediaId: Long,   // The unique ID matching the MP3 on your phone
-    val customTitle: String?,             // Saves your manual title edits
-    val customArtist: String?,            // Saves your manual artist edits
-    val fetchedArtUrl: String?,           // Caches the 1000x1000 internet cover
-    val fetchedLyrics: String?            // Caches the lyrics from LRCLIB
+    @PrimaryKey val localMediaId: Long,
+    val customTitle: String?,
+    val customArtist: String?,
+    val fetchedArtUrl: String?,
+    val fetchedLyrics: String?
 )
 
 // ============================================================================
@@ -29,9 +29,11 @@ data class PlaylistEntity(
 // ============================================================================
 // 3. THE BRIDGE (Many-to-Many Relationship)
 // ============================================================================
+// THE FIX: Added `indices` to prevent the Room compiler warning and speed up queries
 @Entity(
     tableName = "playlist_song_cross_ref",
-    primaryKeys = ["playlistId", "localMediaId"]
+    primaryKeys = ["playlistId", "localMediaId"],
+    indices = [Index("localMediaId")] 
 )
 data class PlaylistSongCrossRef(
     val playlistId: Long,
@@ -39,7 +41,7 @@ data class PlaylistSongCrossRef(
 )
 
 // ============================================================================
-// 4. THE RELATIONAL QUERY MODEL (Automatically joins Playlists and Songs)
+// 4. THE RELATIONAL QUERY MODEL
 // ============================================================================
 data class PlaylistWithSongs(
     @Embedded val playlist: PlaylistEntity,
@@ -52,22 +54,23 @@ data class PlaylistWithSongs(
 )
 
 // ============================================================================
-// 5. THE DAO (Data Access Object - The API for your App to talk to the DB)
+// 5. THE DAO (Data Access Object)
 // ============================================================================
 @Dao
 interface LibraryDao {
-    // --- Self-Healing Memory Commands ---
     @Query("SELECT * FROM saved_songs WHERE localMediaId = :id LIMIT 1")
     suspend fun getSongMemory(id: Long): SongEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun saveSongMemory(song: SongEntity)
 
-    // --- Playlist Engine Commands ---
+    // THE FIX: The missing streaming function that the UI was looking for!
+    @Query("SELECT * FROM saved_songs")
+    fun getAllSongMemories(): Flow<List<SongEntity>>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun createPlaylist(playlist: PlaylistEntity): Long
 
-    // Returns a Flow so the UI instantly updates if a playlist is added/deleted
     @Query("SELECT * FROM playlists ORDER BY createdAt DESC")
     fun getAllPlaylists(): Flow<List<PlaylistEntity>>
 
