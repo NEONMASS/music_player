@@ -5,17 +5,18 @@ import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 
 // ============================================================================
-// 1. THE SONG VAULT (Upgraded to hold fetched official names!)
+// 1. THE SONG VAULT (Upgraded with Favorites!)
 // ============================================================================
 @Entity(tableName = "saved_songs")
 data class SongEntity(
     @PrimaryKey val localMediaId: Long,
     val customTitle: String?,
     val customArtist: String?,
-    val fetchedTitle: String?,   // NEW: Saves the official internet title
-    val fetchedArtist: String?,  // NEW: Saves the official internet artist
+    val fetchedTitle: String?,   
+    val fetchedArtist: String?,  
     val fetchedArtUrl: String?,
-    val fetchedLyrics: String?
+    val fetchedLyrics: String?,
+    val isFavorite: Boolean = false // NEW: The Liked Songs flag!
 )
 
 @Entity(tableName = "playlists")
@@ -56,6 +57,14 @@ interface LibraryDao {
     @Query("SELECT * FROM saved_songs")
     fun getAllSongMemories(): Flow<List<SongEntity>>
 
+    // NEW: Instantly toggle the heart button status!
+    @Query("UPDATE saved_songs SET isFavorite = :isFavorite WHERE localMediaId = :id")
+    suspend fun updateFavoriteStatus(id: Long, isFavorite: Boolean)
+
+    // NEW: Quickly grab all favorite songs for a dedicated Playlist screen
+    @Query("SELECT * FROM saved_songs WHERE isFavorite = 1")
+    fun getFavoriteSongs(): Flow<List<SongEntity>>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun createPlaylist(playlist: PlaylistEntity): Long
 
@@ -75,7 +84,7 @@ interface LibraryDao {
 // ============================================================================
 @Database(
     entities = [SongEntity::class, PlaylistEntity::class, PlaylistSongCrossRef::class],
-    version = 2, // THE CRASH FIX: Bumping this to 2 tells Android to safely migrate instead of crashing!
+    version = 3, // THE CRASH FIX: Bumped to 3 to safely add the Favorite column
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -92,7 +101,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "hybrid_player_database"
                 )
-                .fallbackToDestructiveMigration() // Safely handles the Version 1 -> Version 2 transition
+                .fallbackToDestructiveMigration() // Safely handles V2 -> V3
                 .build()
                 INSTANCE = instance
                 instance
