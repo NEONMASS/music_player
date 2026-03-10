@@ -31,7 +31,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.AutoMirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -291,7 +291,7 @@ fun MusicPlayerUI() {
                     NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 8.dp) {
                         NavigationBarItem(icon = { Icon(Icons.Default.Home, contentDescription = "Home") }, label = { Text("Home", fontSize = 10.sp) }, selected = currentTab == 0 && !isSearchActive, onClick = { currentTab = 0; isSearchActive = false; viewingLikedSongs = false; viewingPlaylistId = null })
                         NavigationBarItem(icon = { Icon(Icons.Default.Search, contentDescription = "Search") }, label = { Text("Search", fontSize = 10.sp) }, selected = isSearchActive, onClick = { isSearchActive = true; currentTab = 1 })
-                        NavigationBarItem(icon = { Icon(Icons.Automirrored.Filled.QueueMusic, contentDescription = "Library") }, label = { Text("Playlists", fontSize = 10.sp) }, selected = currentTab == 2 && !isSearchActive, onClick = { currentTab = 2; isSearchActive = false })
+                        NavigationBarItem(icon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = "Library") }, label = { Text("Playlists", fontSize = 10.sp) }, selected = currentTab == 2 && !isSearchActive, onClick = { currentTab = 2; isSearchActive = false })
                         NavigationBarItem(icon = { Icon(Icons.Default.Folder, contentDescription = "Offline") }, label = { Text("Tracks", fontSize = 10.sp) }, selected = currentTab == 3 && !isSearchActive, onClick = { currentTab = 3; isSearchActive = false; viewingLikedSongs = false; viewingPlaylistId = null })
                     }
                 }
@@ -447,7 +447,7 @@ fun MusicPlayerUI() {
                                         items(customPlaylists) { playlist ->
                                             Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).clickable { viewingPlaylistId = playlist.playlistId }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                                                 Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                                    Box(modifier = Modifier.size(64.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)), contentAlignment = Alignment.Center) { Icon(Icons.Automirrored.Filled.QueueMusic, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
+                                                    Box(modifier = Modifier.size(64.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)), contentAlignment = Alignment.Center) { Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
                                                     Spacer(modifier = Modifier.width(16.dp))
                                                     Column {
                                                         Text(playlist.name, fontWeight = FontWeight.Bold, fontSize = 18.sp)
@@ -598,7 +598,7 @@ fun FullScreenPlayer(
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = onClose) { Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Minimize", modifier = Modifier.size(36.dp), tint = Color.White) }
                     Row {
-                        IconButton(onClick = { showQueue = !showQueue; if(showQueue) showLyrics = false }) { Icon(if (showQueue) Icons.Automirrored.Filled.QueueMusic else Icons.Default.FormatListBulleted, contentDescription = "Toggle Queue", tint = Color.White) }
+                        IconButton(onClick = { showQueue = !showQueue; if(showQueue) showLyrics = false }) { Icon(if (showQueue) Icons.AutoMirrored.Filled.QueueMusic else Icons.Default.FormatListBulleted, contentDescription = "Toggle Queue", tint = Color.White) }
                         if (internetData?.lyrics != null) { IconButton(onClick = { showLyrics = !showLyrics; if(showLyrics) showQueue = false }) { Icon(if (showLyrics) Icons.Default.MusicNote else Icons.Default.Subject, contentDescription = "Toggle Lyrics", tint = Color.White) } }
                     }
                 }
