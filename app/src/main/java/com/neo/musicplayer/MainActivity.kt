@@ -112,9 +112,12 @@ class MainActivity : ComponentActivity() {
 fun MusicPlayerUI() {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    
-    // Wire up the Room Database Memory
     val db = remember { AppDatabase.getDatabase(context).libraryDao() }
+    
+    // THE FIX: Listen to the entire Room database continuously.
+    val songMemories by db.getAllSongMemories().collectAsState(initial = emptyList())
+    // Create a fast lookup map so the list can instantly find its memory
+    val memoryMap = remember(songMemories) { songMemories.associateBy { it.localMediaId } }
     
     var isSearchActive by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
@@ -123,7 +126,7 @@ fun MusicPlayerUI() {
 
     var currentSong by remember { mutableStateOf<LocalSong?>(null) }
     var fetchedInternetData by remember { mutableStateOf<InternetSongData?>(null) } 
-    var songToEdit by remember { mutableStateOf<LocalSong?>(null) } // Controls the Edit Dialog
+    var songToEdit by remember { mutableStateOf<LocalSong?>(null) } 
     
     var isPlaying by remember { mutableStateOf(false) }
     var playbackState by remember { mutableStateOf(Player.STATE_IDLE) }
@@ -144,33 +147,29 @@ fun MusicPlayerUI() {
 
     val playSong = { song: LocalSong ->
         currentSong = song
-        fetchedInternetData = null 
         
         coroutineScope.launch {
-            // 1. Check the Room Database Vault first!
             val memory = db.getSongMemory(song.id)
-            val searchTitle = memory?.customTitle ?: song.title
-            val searchArtist = memory?.customArtist ?: song.artist
+            val searchTitle = memory?.customTitle?.takeIf { it.isNotBlank() } ?: song.title
+            val searchArtist = memory?.customArtist?.takeIf { it.isNotBlank() } ?: song.artist
 
-            if (memory?.fetchedArtUrl != null) {
-                // We already have the premium data saved offline. Load it instantly!
-                fetchedInternetData = InternetSongData(
-                    title = searchTitle,
-                    artist = searchArtist,
-                    artUrl = memory.fetchedArtUrl,
-                    lyrics = memory.fetchedLyrics
-                )
-            } else {
-                // 2. We don't have it saved. Fire the 4-way Dragnet Engine!
+            // THE FIX: Instantly lock in the user's edits into the UI, even before the internet search starts.
+            fetchedInternetData = InternetSongData(
+                title = searchTitle,
+                artist = searchArtist,
+                artUrl = memory?.fetchedArtUrl ?: "",
+                lyrics = memory?.fetchedLyrics
+            )
+
+            // Only run the heavy Dragnet if we don't already have premium art saved
+            if (memory?.fetchedArtUrl == null) {
                 val result = fetchMultiSourceMetadata(searchTitle, searchArtist)
                 if (result != null) {
-                    fetchedInternetData = result
-                    
-                    // 3. Save the result to the Vault so we never have to fetch it again
+                    fetchedInternetData = result 
                     db.saveSongMemory(
                         SongEntity(
                             localMediaId = song.id,
-                            customTitle = memory?.customTitle, // Preserve manual edits
+                            customTitle = memory?.customTitle,
                             customArtist = memory?.customArtist,
                             fetchedArtUrl = result.artUrl,
                             fetchedLyrics = result.lyrics
@@ -249,11 +248,17 @@ fun MusicPlayerUI() {
                 } else {
                     LazyColumn(modifier = Modifier.fillMaxSize()) {
                         items(localSongs) { song ->
+                            
+                            // THE FIX: The List item checks the memory map dynamically!
+                            val mem = memoryMap[song.id]
+                            val displayTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: song.title
+                            val displayArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: song.artist
+                            val displayArt = mem?.fetchedArtUrl?.takeIf { it.isNotBlank() } ?: song.albumArtUri
+
                             Card(
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                             ) {
                                 Row(
-                                    // THE LONG-PRESS EDIT TRIGGER
                                     modifier = Modifier.combinedClickable(
                                         onClick = { playSong(song) },
                                         onLongClick = { songToEdit = song }
@@ -262,15 +267,15 @@ fun MusicPlayerUI() {
                                 ) {
                                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                                         SubcomposeAsyncImage(
-                                            model = song.albumArtUri, contentDescription = "Album Art", contentScale = ContentScale.Crop,
+                                            model = displayArt, contentDescription = "Album Art", contentScale = ContentScale.Crop,
                                             modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)),
                                             error = { BlueWhiteFallback(modifier = Modifier.fillMaxSize(), iconSize = 24.dp) },
                                             loading = { BlueWhiteFallback(modifier = Modifier.fillMaxSize(), iconSize = 24.dp) }
                                         )
                                         Spacer(modifier = Modifier.width(16.dp))
                                         Column {
-                                            Text(song.title, fontWeight = FontWeight.SemiBold, maxLines = 1, color = if (currentSong?.id == song.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                                            Text(song.artist, style = MaterialTheme.typography.bodySmall, maxLines = 1, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                                            Text(displayTitle, fontWeight = FontWeight.SemiBold, maxLines = 1, color = if (currentSong?.id == song.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                                            Text(displayArtist, style = MaterialTheme.typography.bodySmall, maxLines = 1, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
                                         }
                                     }
                                 }
@@ -294,17 +299,10 @@ fun MusicPlayerUI() {
             }
         }
 
-        // --- THE SELF-HEALING EDIT DIALOG ---
         if (songToEdit != null) {
-            var editTitle by remember { mutableStateOf(songToEdit!!.title) }
-            var editArtist by remember { mutableStateOf(songToEdit!!.artist) }
-
-            // Pre-fill fields if the user has already saved custom edits before
-            LaunchedEffect(songToEdit) {
-                val mem = db.getSongMemory(songToEdit!!.id)
-                if (mem?.customTitle != null) editTitle = mem.customTitle
-                if (mem?.customArtist != null) editArtist = mem.customArtist
-            }
+            val mem = memoryMap[songToEdit!!.id]
+            var editTitle by remember { mutableStateOf(mem?.customTitle ?: songToEdit!!.title) }
+            var editArtist by remember { mutableStateOf(mem?.customArtist ?: songToEdit!!.artist) }
 
             AlertDialog(
                 onDismissRequest = { songToEdit = null },
@@ -319,18 +317,17 @@ fun MusicPlayerUI() {
                 confirmButton = {
                     Button(onClick = {
                         coroutineScope.launch {
-                            // Wipe the bad network cache, but save the new text
+                            // Save user edits and explicitly wipe the old network cache
                             db.saveSongMemory(SongEntity(
                                 localMediaId = songToEdit!!.id,
-                                customTitle = editTitle.trim(),
-                                customArtist = editArtist.trim(),
+                                customTitle = editTitle.trim().takeIf { it.isNotEmpty() },
+                                customArtist = editArtist.trim().takeIf { it.isNotEmpty() },
                                 fetchedArtUrl = null, 
                                 fetchedLyrics = null  
                             ))
                             val targetSong = songToEdit!!
                             songToEdit = null
                             
-                            // Instantly play to trigger the Dragnet with the perfect new names
                             playSong(targetSong)
                             showFullScreenPlayer = true
                         }
