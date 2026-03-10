@@ -37,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow // <-- THE FIX: Added missing shadow import
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -802,7 +803,7 @@ suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSon
         val looseItunesTask = async(Dispatchers.IO) { searchItunesAPI(cleanTitle) }
         val looseSaavnTask = async(Dispatchers.IO) { searchJioSaavnAPI(cleanTitle) }
         val looseDeezerTask = async(Dispatchers.IO) { searchDeezerAPI(cleanTitle) }
-        val looseYoutubeTask = async(async(Dispatchers.IO) { searchYouTubePipedAPI(cleanTitle) })
+        val looseYoutubeTask = async(Dispatchers.IO) { searchYouTubePipedAPI(cleanTitle) } // <-- THE FIX: Removed extra async()
         
         result = looseItunesTask.await() ?: looseSaavnTask.await() ?: looseDeezerTask.await() ?: looseYoutubeTask.await()
     }
