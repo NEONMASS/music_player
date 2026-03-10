@@ -125,14 +125,11 @@ fun MusicPlayerUI() {
     var permissionGranted by remember { mutableStateOf(false) }
     var currentTab by remember { mutableIntStateOf(0) } 
 
-    // --- PLAYLIST NAVIGATION STATES ---
     var viewingLikedSongs by remember { mutableStateOf(false) }
     var viewingPlaylistId by remember { mutableStateOf<Long?>(null) }
     var currentPlaylistData by remember { mutableStateOf<PlaylistWithSongs?>(null) }
 
-    LaunchedEffect(viewingPlaylistId) {
-        viewingPlaylistId?.let { id -> currentPlaylistData = db.getPlaylistWithSongs(id) }
-    }
+    LaunchedEffect(viewingPlaylistId) { viewingPlaylistId?.let { id -> currentPlaylistData = db.getPlaylistWithSongs(id) } }
 
     var selectedLanguage by remember { mutableStateOf("All") }
     val languages = listOf("All", "Tamil", "English", "Hindi")
@@ -169,7 +166,15 @@ fun MusicPlayerUI() {
     }
 
     val exoPlayer = remember {
+        val audioAttributes = androidx.media3.common.AudioAttributes.Builder()
+            .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+            .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MUSIC)
+            .build()
+
         ExoPlayer.Builder(context).build().apply {
+            setAudioAttributes(audioAttributes, true) 
+            setHandleAudioBecomingNoisy(true) 
+            repeatMode = Player.REPEAT_MODE_ALL 
             addListener(object : Player.Listener { 
                 override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
                 override fun onPlaybackStateChanged(state: Int) { playbackState = state }
@@ -185,6 +190,9 @@ fun MusicPlayerUI() {
 
     LaunchedEffect(currentSong) {
         val song = currentSong ?: return@LaunchedEffect
+        // If it's a phantom internet song (negative ID), skip the database fetch since we already locked it in
+        if (song.id < 0) return@LaunchedEffect 
+
         val memory = db.getSongMemory(song.id)
         val displayTitle = memory?.customTitle?.takeIf { it.isNotBlank() } ?: memory?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title
         val displayArtist = memory?.customArtist?.takeIf { it.isNotBlank() } ?: memory?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist
@@ -202,12 +210,51 @@ fun MusicPlayerUI() {
         }
     }
 
+    // Local Player Engine
     val playSong = { song: LocalSong ->
         val startIndex = localSongs.indexOf(song)
         if (startIndex >= 0 && mediaItems.isNotEmpty()) {
             exoPlayer.setMediaItems(mediaItems, startIndex, androidx.media3.common.C.TIME_UNSET)
             exoPlayer.prepare()
             exoPlayer.play()
+        }
+    }
+
+    // =========================================================================
+    // PHASE 3: THE HYBRID WEB STREAMING ENGINE
+    // =========================================================================
+    val playWebSong: (InternetSongData) -> Unit = { webSongData ->
+        coroutineScope.launch {
+            Toast.makeText(context, "Extracting audio for ${webSongData.title}...", Toast.LENGTH_SHORT).show()
+            
+            // 1. Scrape the raw audio stream from the internet
+            val streamUrl = fetchAudioStreamUrl(webSongData.title, webSongData.artist)
+            
+            if (streamUrl != null) {
+                // 2. Create a phantom ID to trick the player into accepting it
+                val dummyId = -(System.currentTimeMillis() % 1000000000)
+                val dummySong = LocalSong(dummyId, webSongData.title, webSongData.artist, -1L)
+                
+                // 3. Save it to the DB so it appears in your "Recently Played" Dashboard!
+                db.saveSongMemory(SongEntity(
+                    localMediaId = dummyId, customTitle = webSongData.title, customArtist = webSongData.artist,
+                    fetchedTitle = webSongData.title, fetchedArtist = webSongData.artist, fetchedArtUrl = webSongData.artUrl,
+                    fetchedLyrics = null, isFavorite = false, lastPlayedAt = System.currentTimeMillis()
+                ))
+                
+                // 4. Update the UI state
+                currentSong = dummySong
+                fetchedInternetData = webSongData
+                
+                // 5. Instantly stream the raw audio
+                exoPlayer.setMediaItem(MediaItem.fromUri(streamUrl))
+                exoPlayer.prepare()
+                exoPlayer.play()
+                
+                showFullScreenPlayer = true
+            } else {
+                Toast.makeText(context, "Failed to find audio stream.", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -264,7 +311,10 @@ fun MusicPlayerUI() {
                             LazyColumn(modifier = Modifier.fillMaxSize()) {
                                 items(liveSearchResults) { internetSong ->
                                     Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-                                        Row(modifier = Modifier.clickable { Toast.makeText(context, "Extracting Audio for ${internetSong.title}...", Toast.LENGTH_SHORT).show() }.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                        Row(
+                                            // THIS NOW TRIGGERS THE AUDIO EXTRACTOR
+                                            modifier = Modifier.clickable { playWebSong(internetSong) }.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically
+                                        ) {
                                             SubcomposeAsyncImage(model = internetSong.artUrl, contentDescription = "Album Art", contentScale = ContentScale.Crop, modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)), error = { BlueWhiteFallback() }, loading = { BlueWhiteFallback() })
                                             Spacer(modifier = Modifier.width(16.dp))
                                             Column(modifier = Modifier.weight(1f)) {
@@ -291,7 +341,11 @@ fun MusicPlayerUI() {
                                                 val mem = memoryMap[song.id]
                                                 val displayTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title
                                                 val displayArt = mem?.fetchedArtUrl?.takeIf { it.isNotBlank() } ?: song.albumArtUri
-                                                Column(modifier = Modifier.width(120.dp).clickable { playSong(song) }) {
+                                                Column(
+                                                    modifier = Modifier.width(120.dp).clickable { 
+                                                        if (song.id < 0) playWebSong(InternetSongData(displayTitle, song.artist, displayArt ?: "")) else playSong(song) 
+                                                    }
+                                                ) {
                                                     SubcomposeAsyncImage(model = displayArt, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(120.dp).clip(RoundedCornerShape(12.dp)), error = { BlueWhiteFallback() })
                                                     Spacer(modifier = Modifier.height(6.dp))
                                                     Text(displayTitle, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
@@ -307,7 +361,7 @@ fun MusicPlayerUI() {
                                             Column(modifier = Modifier.width(140.dp)) {
                                                 Box(modifier = Modifier.size(140.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface), contentAlignment = Alignment.Center) { Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)) }
                                                 Spacer(modifier = Modifier.height(6.dp))
-                                                Text("Phase 3 Scraper", fontWeight = FontWeight.SemiBold, maxLines = 1, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                                                Text("Phase 4 Smart Gen", fontWeight = FontWeight.SemiBold, maxLines = 1, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
                                             }
                                         }
                                     }
@@ -328,7 +382,7 @@ fun MusicPlayerUI() {
                                             val displayArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist
                                             val displayArt = mem?.fetchedArtUrl?.takeIf { it.isNotBlank() } ?: song.albumArtUri
                                             Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-                                                Row(modifier = Modifier.combinedClickable(onClick = { playSong(song) }, onLongClick = { selectedSongForAction = song }).padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                                Row(modifier = Modifier.combinedClickable(onClick = { if (song.id < 0) playWebSong(InternetSongData(displayTitle, displayArtist, displayArt ?: "")) else playSong(song) }, onLongClick = { selectedSongForAction = song }).padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                                     SubcomposeAsyncImage(model = displayArt, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)), error = { BlueWhiteFallback() }, loading = { BlueWhiteFallback() })
                                                     Spacer(modifier = Modifier.width(16.dp))
                                                     Column(modifier = Modifier.weight(1f)) {
@@ -344,7 +398,12 @@ fun MusicPlayerUI() {
                                         IconButton(onClick = { viewingPlaylistId = null }) { Icon(Icons.Default.ArrowBack, contentDescription = "Back") }
                                         Text(currentPlaylistData!!.playlist.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                                     }
-                                    val playlistSongs = remember(currentPlaylistData, localSongs) { currentPlaylistData!!.songs.mapNotNull { mem -> localSongs.find { it.id == mem.localMediaId } } }
+                                    // Fetch the phantom web songs AND the local songs that are in this playlist
+                                    val playlistSongs = remember(currentPlaylistData, localSongs) { 
+                                        currentPlaylistData!!.songs.map { mem -> 
+                                            localSongs.find { it.id == mem.localMediaId } ?: LocalSong(mem.localMediaId, mem.fetchedTitle ?: "Unknown", mem.fetchedArtist ?: "Unknown", -1L)
+                                        } 
+                                    }
                                     LazyColumn(modifier = Modifier.fillMaxSize()) {
                                         items(playlistSongs) { song ->
                                             val mem = memoryMap[song.id]
@@ -352,7 +411,7 @@ fun MusicPlayerUI() {
                                             val displayArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist
                                             val displayArt = mem?.fetchedArtUrl?.takeIf { it.isNotBlank() } ?: song.albumArtUri
                                             Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-                                                Row(modifier = Modifier.combinedClickable(onClick = { playSong(song) }, onLongClick = { selectedSongForAction = song }).padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                                Row(modifier = Modifier.combinedClickable(onClick = { if (song.id < 0) playWebSong(InternetSongData(displayTitle, displayArtist, displayArt ?: "")) else playSong(song) }, onLongClick = { selectedSongForAction = song }).padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                                     SubcomposeAsyncImage(model = displayArt, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)), error = { BlueWhiteFallback() }, loading = { BlueWhiteFallback() })
                                                     Spacer(modifier = Modifier.width(16.dp))
                                                     Column(modifier = Modifier.weight(1f)) {
@@ -432,20 +491,21 @@ fun MusicPlayerUI() {
                 val isFav = memoryMap[currentSong?.id]?.isFavorite == true
                 FullScreenPlayer(
                     song = currentSong!!, internetData = fetchedInternetData, isPlaying = isPlaying, currentPosition = currentPosition, totalDuration = totalDuration, isFavorite = isFav,
-                    queueList = localSongs, memoryMap = memoryMap, playSong = playSong, // Passing Queue Data
+                    queueList = localSongs, memoryMap = memoryMap, playSong = playSong,
                     onClose = { showFullScreenPlayer = false }, onPlayPause = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }, onNext = { exoPlayer.seekToNextMediaItem() }, onPrev = { exoPlayer.seekToPreviousMediaItem() }, onSeek = { percentage -> val seekPosition = (percentage * totalDuration).toLong(); exoPlayer.seekTo(seekPosition); currentPosition = seekPosition }, onToggleFavorite = { toggleFavorite() }
                 )
             }
         }
 
-        // --- DIALOGS ---
         if (selectedSongForAction != null) {
             AlertDialog(
                 onDismissRequest = { selectedSongForAction = null }, title = { Text("Track Options") },
                 text = {
                     Column {
                         TextButton(onClick = { showAddToPlaylistDialog = true }, modifier = Modifier.fillMaxWidth()) { Text("Add to Playlist") }
-                        TextButton(onClick = { showEditDialog = true }, modifier = Modifier.fillMaxWidth()) { Text("Edit Metadata (Fix Names)") }
+                        if (selectedSongForAction!!.id >= 0) { // Only allow editing local metadata, web metadata is already perfectly fetched
+                            TextButton(onClick = { showEditDialog = true }, modifier = Modifier.fillMaxWidth()) { Text("Edit Metadata (Fix Names)") }
+                        }
                     }
                 },
                 confirmButton = { TextButton(onClick = { selectedSongForAction = null }) { Text("Cancel") } }
@@ -492,7 +552,6 @@ fun MusicPlayerUI() {
             )
         }
 
-        // --- THE CRASH FIX FOR ADDING TO PLAYLIST ---
         if (showAddToPlaylistDialog && selectedSongForAction != null) {
             val songToAdd = selectedSongForAction!!
             AlertDialog(
@@ -503,10 +562,8 @@ fun MusicPlayerUI() {
                         items(customPlaylists) { playlist ->
                             TextButton(onClick = {
                                 coroutineScope.launch { 
-                                    // 1. Ensure the song is registered in the vault before linking it to a playlist!
                                     val mem = db.getSongMemory(songToAdd.id)
                                     if (mem == null) { db.saveSongMemory(SongEntity(localMediaId = songToAdd.id, customTitle = null, customArtist = null, fetchedTitle = null, fetchedArtist = null, fetchedArtUrl = null, fetchedLyrics = null, isFavorite = false, lastPlayedAt = 0L)) }
-                                    // 2. Safely add to Playlist
                                     db.addSongToPlaylist(PlaylistSongCrossRef(playlistId = playlist.playlistId, localMediaId = songToAdd.id)) 
                                 }
                                 showAddToPlaylistDialog = false; selectedSongForAction = null
@@ -523,14 +580,14 @@ fun MusicPlayerUI() {
 @Composable
 fun FullScreenPlayer(
     song: LocalSong, internetData: InternetSongData?, isPlaying: Boolean, currentPosition: Long, totalDuration: Long, isFavorite: Boolean,
-    queueList: List<LocalSong>, memoryMap: Map<Long, SongEntity>, playSong: (LocalSong) -> Unit, // New Queue Parameters
+    queueList: List<LocalSong>, memoryMap: Map<Long, SongEntity>, playSong: (LocalSong) -> Unit, 
     onClose: () -> Unit, onPlayPause: () -> Unit, onNext: () -> Unit, onPrev: () -> Unit, onSeek: (Float) -> Unit, onToggleFavorite: () -> Unit
 ) {
     val displayTitle = internetData?.title ?: song.title
     val displayArtist = internetData?.artist ?: song.artist
     val displayArt = internetData?.artUrl?.takeIf { it.isNotEmpty() } ?: song.albumArtUri
     var showLyrics by remember { mutableStateOf(false) }
-    var showQueue by remember { mutableStateOf(false) } // THE QUEUE STATE
+    var showQueue by remember { mutableStateOf(false) } 
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Box(modifier = Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {})) {
@@ -549,7 +606,6 @@ fun FullScreenPlayer(
 
                 Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
                     if (showQueue) {
-                        // THE LIVE QUEUE UI
                         LazyColumn(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.4f), RoundedCornerShape(16.dp)).padding(8.dp)) {
                             items(queueList) { queueSong ->
                                 val mem = memoryMap[queueSong.id]
@@ -680,6 +736,50 @@ suspend fun fetchLiveSearchResults(query: String): List<InternetSongData> = with
         }
     } catch (e: Exception) { e.printStackTrace() }
     return@withContext results
+}
+
+// =========================================================================
+// PHASE 3: THE RAW AUDIO SCRAPER
+// =========================================================================
+suspend fun fetchAudioStreamUrl(title: String, artist: String): String? = withContext(Dispatchers.IO) {
+    try {
+        val query = URLEncoder.encode("$title $artist", "UTF-8")
+        val searchUrl = URL("https://pipedapi.kavin.rocks/search?q=$query&filter=music_songs")
+        val searchConn = searchUrl.openConnection() as HttpURLConnection
+        searchConn.setRequestProperty("User-Agent", "Mozilla/5.0")
+        
+        if (searchConn.responseCode != 200) return@withContext null
+        val searchRes = searchConn.inputStream.bufferedReader().readText()
+        val items = JSONObject(searchRes).optJSONArray("items") ?: return@withContext null
+        if (items.length() == 0) return@withContext null
+
+        val videoUrl = items.getJSONObject(0).optString("url", "")
+        val videoId = videoUrl.replace("/watch?v=", "")
+        if (videoId.isEmpty()) return@withContext null
+
+        val streamUrl = URL("https://pipedapi.kavin.rocks/streams/$videoId")
+        val streamConn = streamUrl.openConnection() as HttpURLConnection
+        streamConn.setRequestProperty("User-Agent", "Mozilla/5.0")
+        
+        if (streamConn.responseCode != 200) return@withContext null
+        val streamRes = streamConn.inputStream.bufferedReader().readText()
+        val audioStreams = JSONObject(streamRes).optJSONArray("audioStreams") ?: return@withContext null
+
+        var bestUrl: String? = null
+        var highestBitrate = 0
+
+        for (i in 0 until audioStreams.length()) {
+            val stream = audioStreams.getJSONObject(i)
+            val format = stream.optString("format")
+            val bitrate = stream.optInt("bitrate", 0)
+            if (format == "m4a" && bitrate > highestBitrate) {
+                highestBitrate = bitrate
+                bestUrl = stream.optString("url")
+            }
+        }
+        return@withContext bestUrl
+    } catch (e: Exception) { e.printStackTrace() }
+    return@withContext null
 }
 
 private fun searchItunesAPI(query: String): InternetSongData? {
