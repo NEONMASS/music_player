@@ -118,6 +118,9 @@ fun MusicPlayerUI() {
     var localSongs by remember { mutableStateOf<List<LocalSong>>(emptyList()) }
     var permissionGranted by remember { mutableStateOf(false) }
 
+    // THE NEW NAVIGATION STATE
+    var currentTab by remember { mutableIntStateOf(0) } // 0: Home, 1: Search, 2: Playlist, 3: Offline
+
     var currentSong by remember { mutableStateOf<LocalSong?>(null) }
     var fetchedInternetData by remember { mutableStateOf<InternetSongData?>(null) } 
     var songToEdit by remember { mutableStateOf<LocalSong?>(null) } 
@@ -145,7 +148,6 @@ fun MusicPlayerUI() {
         coroutineScope.launch {
             val memory = db.getSongMemory(song.id)
             
-            // THE FIX: The UI now prioritizes: Custom Edit -> Fetched Official Name -> Raw File Name
             val displayTitle = memory?.customTitle?.takeIf { it.isNotBlank() } ?: memory?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title
             val displayArtist = memory?.customArtist?.takeIf { it.isNotBlank() } ?: memory?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist
 
@@ -156,9 +158,7 @@ fun MusicPlayerUI() {
                 lyrics = memory?.fetchedLyrics
             )
 
-            // If we don't have offline art saved, fire the Dragnet
             if (memory?.fetchedArtUrl == null) {
-                // Dragnet searches using the custom edit, or the raw file name if no edit exists
                 val searchTitle = memory?.customTitle?.takeIf { it.isNotBlank() } ?: song.title
                 val searchArtist = memory?.customArtist?.takeIf { it.isNotBlank() } ?: song.artist
                 
@@ -166,8 +166,6 @@ fun MusicPlayerUI() {
                 
                 if (result != null) {
                     fetchedInternetData = result 
-                    
-                    // THE FIX: We now save the 'result.title' and 'result.artist' into the Vault!
                     db.saveSongMemory(
                         SongEntity(
                             localMediaId = song.id,
@@ -222,7 +220,17 @@ fun MusicPlayerUI() {
                     title = { 
                         if (isSearchActive) {
                             TextField(value = searchQuery, onValueChange = { searchQuery = it }, placeholder = { Text("Search web...") }, singleLine = true, colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent))
-                        } else { Text("Hybrid Player", fontWeight = FontWeight.Bold) }
+                        } else { 
+                            Text(
+                                text = when(currentTab) {
+                                    0 -> "Home"
+                                    1 -> "Discover"
+                                    2 -> "Playlists"
+                                    else -> "Offline Library"
+                                }, 
+                                fontWeight = FontWeight.Bold
+                            ) 
+                        }
                     },
                     actions = {
                         IconButton(onClick = { isSearchActive = !isSearchActive; if (!isSearchActive) searchQuery = "" }) {
@@ -233,15 +241,49 @@ fun MusicPlayerUI() {
                 )
             },
             bottomBar = { 
-                if (currentSong != null) {
-                    PlayerControlsBar(
-                        currentSong = currentSong!!, internetData = fetchedInternetData, isPlaying = isPlaying, currentPosition = currentPosition, totalDuration = totalDuration,
-                        onPlayPause = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() },
-                        onNext = { val idx = localSongs.indexOf(currentSong); if (idx in 0 until localSongs.size - 1) playSong(localSongs[idx + 1]) },
-                        onPrev = { val idx = localSongs.indexOf(currentSong); if (idx > 0) playSong(localSongs[idx - 1]) },
-                        onBarClick = { showFullScreenPlayer = true }
-                    )
-                } else { IconOnlyBottomBar() }
+                // THE NEW BOTTOM NAVIGATION BAR ARCHITECTURE
+                Column {
+                    // Mini Player stacks directly on top of the Nav Bar
+                    if (currentSong != null) {
+                        PlayerControlsBar(
+                            currentSong = currentSong!!, internetData = fetchedInternetData, isPlaying = isPlaying, currentPosition = currentPosition, totalDuration = totalDuration,
+                            onPlayPause = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() },
+                            onNext = { val idx = localSongs.indexOf(currentSong); if (idx in 0 until localSongs.size - 1) playSong(localSongs[idx + 1]) },
+                            onPrev = { val idx = localSongs.indexOf(currentSong); if (idx > 0) playSong(localSongs[idx - 1]) },
+                            onBarClick = { showFullScreenPlayer = true }
+                        )
+                    }
+                    
+                    NavigationBar(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 8.dp
+                    ) {
+                        NavigationBarItem(
+                            icon = { Icon(Icons.Default.Home, contentDescription = "Home") },
+                            label = { Text("Home", fontSize = 10.sp) },
+                            selected = currentTab == 0,
+                            onClick = { currentTab = 0; isSearchActive = false }
+                        )
+                        NavigationBarItem(
+                            icon = { Icon(Icons.Default.Search, contentDescription = "Search") },
+                            label = { Text("Search", fontSize = 10.sp) },
+                            selected = currentTab == 1,
+                            onClick = { currentTab = 1; isSearchActive = true }
+                        )
+                        NavigationBarItem(
+                            icon = { Icon(Icons.Default.QueueMusic, contentDescription = "Playlist") },
+                            label = { Text("Playlist", fontSize = 10.sp) },
+                            selected = currentTab == 2,
+                            onClick = { currentTab = 2; isSearchActive = false }
+                        )
+                        NavigationBarItem(
+                            icon = { Icon(Icons.Default.CloudOff, contentDescription = "Offline") },
+                            label = { Text("Offline", fontSize = 10.sp) },
+                            selected = currentTab == 3,
+                            onClick = { currentTab = 3; isSearchActive = false }
+                        )
+                    }
+                }
             },
             containerColor = MaterialTheme.colorScheme.background
         ) { paddingValues ->
@@ -250,38 +292,63 @@ fun MusicPlayerUI() {
                 if (!permissionGranted) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Storage permission is required.", color = MaterialTheme.colorScheme.primary) }
                 } else {
-                    LazyColumn(modifier = Modifier.fillMaxSize()) {
-                        items(localSongs) { song ->
-                            
-                            val mem = memoryMap[song.id]
-                            // The Background list now respects the fetched official names too!
-                            val displayTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title
-                            val displayArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist
-                            val displayArt = mem?.fetchedArtUrl?.takeIf { it.isNotBlank() } ?: song.albumArtUri
+                    // TAB CONTENT SWITCHER
+                    when (currentTab) {
+                        0, 3 -> { // Home & Offline Tabs (Shows your local music)
+                            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                                items(localSongs) { song ->
+                                    val mem = memoryMap[song.id]
+                                    val displayTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title
+                                    val displayArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist
+                                    val displayArt = mem?.fetchedArtUrl?.takeIf { it.isNotBlank() } ?: song.albumArtUri
 
-                            Card(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                            ) {
-                                Row(
-                                    modifier = Modifier.combinedClickable(
-                                        onClick = { playSong(song) },
-                                        onLongClick = { songToEdit = song }
-                                    ).padding(16.dp).fillMaxWidth(), 
-                                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                        SubcomposeAsyncImage(
-                                            model = displayArt, contentDescription = "Album Art", contentScale = ContentScale.Crop,
-                                            modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)),
-                                            error = { BlueWhiteFallback(modifier = Modifier.fillMaxSize(), iconSize = 24.dp) },
-                                            loading = { BlueWhiteFallback(modifier = Modifier.fillMaxSize(), iconSize = 24.dp) }
-                                        )
-                                        Spacer(modifier = Modifier.width(16.dp))
-                                        Column {
-                                            Text(displayTitle, fontWeight = FontWeight.SemiBold, maxLines = 1, color = if (currentSong?.id == song.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                                            Text(displayArtist, style = MaterialTheme.typography.bodySmall, maxLines = 1, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                                    Card(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.combinedClickable(
+                                                onClick = { playSong(song) },
+                                                onLongClick = { songToEdit = song }
+                                            ).padding(16.dp).fillMaxWidth(), 
+                                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                                SubcomposeAsyncImage(
+                                                    model = displayArt, contentDescription = "Album Art", contentScale = ContentScale.Crop,
+                                                    modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)),
+                                                    error = { BlueWhiteFallback(modifier = Modifier.fillMaxSize(), iconSize = 24.dp) },
+                                                    loading = { BlueWhiteFallback(modifier = Modifier.fillMaxSize(), iconSize = 24.dp) }
+                                                )
+                                                Spacer(modifier = Modifier.width(16.dp))
+                                                Column {
+                                                    Text(displayTitle, fontWeight = FontWeight.SemiBold, maxLines = 1, color = if (currentSong?.id == song.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                                                    Text(displayArtist, style = MaterialTheme.typography.bodySmall, maxLines = 1, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                                                }
+                                            }
                                         }
                                     }
+                                }
+                            }
+                        }
+                        1 -> { // Search Tab Placeholder
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f))
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Text("Web Audio Scraper", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text("Phase 3 Foundation Ready.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                                }
+                            }
+                        }
+                        2 -> { // Playlist Tab Placeholder
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(Icons.Default.QueueMusic, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f))
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Text("Playlist Engine", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text("Phase 2 Foundation Ready.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
                                 }
                             }
                         }
@@ -325,7 +392,7 @@ fun MusicPlayerUI() {
                                 localMediaId = songToEdit!!.id,
                                 customTitle = editTitle.trim().takeIf { it.isNotEmpty() },
                                 customArtist = editArtist.trim().takeIf { it.isNotEmpty() },
-                                fetchedTitle = null, // Wipe the old fetched names
+                                fetchedTitle = null, 
                                 fetchedArtist = null,
                                 fetchedArtUrl = null, 
                                 fetchedLyrics = null  
@@ -463,13 +530,6 @@ fun PlayerControlsBar(currentSong: LocalSong, internetData: InternetSongData?, i
                 }
             }
         }
-    }
-}
-
-@Composable
-fun IconOnlyBottomBar() {
-    BottomAppBar(containerColor = MaterialTheme.colorScheme.surface, contentPadding = PaddingValues(horizontal = 24.dp), modifier = Modifier.fillMaxWidth(), tonalElevation = 8.dp) {
-        Icon(Icons.Default.List, contentDescription = "Local Library", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
     }
 }
 
