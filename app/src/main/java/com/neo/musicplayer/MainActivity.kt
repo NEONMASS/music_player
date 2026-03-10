@@ -15,8 +15,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -80,7 +82,6 @@ fun AestheticTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composa
     MaterialTheme(colorScheme = colorScheme, content = content)
 }
 
-// --- The Beautiful Blue & White Fallback Art ---
 @Composable
 fun BlueWhiteFallback(modifier: Modifier = Modifier, iconSize: Dp = 48.dp) {
     Box(
@@ -106,11 +107,14 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun MusicPlayerUI() {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    
+    // Wire up the Room Database Memory
+    val db = remember { AppDatabase.getDatabase(context).libraryDao() }
     
     var isSearchActive by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
@@ -119,6 +123,7 @@ fun MusicPlayerUI() {
 
     var currentSong by remember { mutableStateOf<LocalSong?>(null) }
     var fetchedInternetData by remember { mutableStateOf<InternetSongData?>(null) } 
+    var songToEdit by remember { mutableStateOf<LocalSong?>(null) } // Controls the Edit Dialog
     
     var isPlaying by remember { mutableStateOf(false) }
     var playbackState by remember { mutableStateOf(Player.STATE_IDLE) }
@@ -142,7 +147,37 @@ fun MusicPlayerUI() {
         fetchedInternetData = null 
         
         coroutineScope.launch {
-            fetchedInternetData = fetchMultiSourceMetadata(song.title, song.artist)
+            // 1. Check the Room Database Vault first!
+            val memory = db.getSongMemory(song.id)
+            val searchTitle = memory?.customTitle ?: song.title
+            val searchArtist = memory?.customArtist ?: song.artist
+
+            if (memory?.fetchedArtUrl != null) {
+                // We already have the premium data saved offline. Load it instantly!
+                fetchedInternetData = InternetSongData(
+                    title = searchTitle,
+                    artist = searchArtist,
+                    artUrl = memory.fetchedArtUrl,
+                    lyrics = memory.fetchedLyrics
+                )
+            } else {
+                // 2. We don't have it saved. Fire the 4-way Dragnet Engine!
+                val result = fetchMultiSourceMetadata(searchTitle, searchArtist)
+                if (result != null) {
+                    fetchedInternetData = result
+                    
+                    // 3. Save the result to the Vault so we never have to fetch it again
+                    db.saveSongMemory(
+                        SongEntity(
+                            localMediaId = song.id,
+                            customTitle = memory?.customTitle, // Preserve manual edits
+                            customArtist = memory?.customArtist,
+                            fetchedArtUrl = result.artUrl,
+                            fetchedLyrics = result.lyrics
+                        )
+                    )
+                }
+            }
         }
 
         val contentUri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, song.id)
@@ -218,7 +253,12 @@ fun MusicPlayerUI() {
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                             ) {
                                 Row(
-                                    modifier = Modifier.clickable { playSong(song) }.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween
+                                    // THE LONG-PRESS EDIT TRIGGER
+                                    modifier = Modifier.combinedClickable(
+                                        onClick = { playSong(song) },
+                                        onLongClick = { songToEdit = song }
+                                    ).padding(16.dp).fillMaxWidth(), 
+                                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                                         SubcomposeAsyncImage(
@@ -253,6 +293,52 @@ fun MusicPlayerUI() {
                 )
             }
         }
+
+        // --- THE SELF-HEALING EDIT DIALOG ---
+        if (songToEdit != null) {
+            var editTitle by remember { mutableStateOf(songToEdit!!.title) }
+            var editArtist by remember { mutableStateOf(songToEdit!!.artist) }
+
+            // Pre-fill fields if the user has already saved custom edits before
+            LaunchedEffect(songToEdit) {
+                val mem = db.getSongMemory(songToEdit!!.id)
+                if (mem?.customTitle != null) editTitle = mem.customTitle
+                if (mem?.customArtist != null) editArtist = mem.customArtist
+            }
+
+            AlertDialog(
+                onDismissRequest = { songToEdit = null },
+                title = { Text("Fix Track Metadata", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("Correcting the name forces the engine to find the right cover art and lyrics.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                        OutlinedTextField(value = editTitle, onValueChange = { editTitle = it }, label = { Text("Correct Song Title") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = editArtist, onValueChange = { editArtist = it }, label = { Text("Correct Artist (Optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        coroutineScope.launch {
+                            // Wipe the bad network cache, but save the new text
+                            db.saveSongMemory(SongEntity(
+                                localMediaId = songToEdit!!.id,
+                                customTitle = editTitle.trim(),
+                                customArtist = editArtist.trim(),
+                                fetchedArtUrl = null, 
+                                fetchedLyrics = null  
+                            ))
+                            val targetSong = songToEdit!!
+                            songToEdit = null
+                            
+                            // Instantly play to trigger the Dragnet with the perfect new names
+                            playSong(targetSong)
+                            showFullScreenPlayer = true
+                        }
+                    }) { Text("Save & Refetch") }
+                },
+                dismissButton = { TextButton(onClick = { songToEdit = null }) { Text("Cancel") } }
+            )
+        }
     }
 }
 
@@ -267,13 +353,8 @@ fun FullScreenPlayer(
     
     var showLyrics by remember { mutableStateOf(false) }
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.background
-    ) {
-        Box(
-            modifier = Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {})
-        ) {
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Box(modifier = Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {})) {
             key(displayArt) {
                 SubcomposeAsyncImage(
                     model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(),
@@ -554,7 +635,6 @@ private fun searchLyricsAPI(title: String, artist: String): String? {
     return null
 }
 
-// The Concurrent 4-Way Dragnet Fetcher
 suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSongData? = coroutineScope {
     val cleanTitle = title.lowercase()
         .replace(".mp3", "").replace(".m4a", "").replace(".wav", "")
@@ -571,7 +651,6 @@ suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSon
     val isUnknownArtist = artist.contains("unknown", ignoreCase = true)
     var result: InternetSongData? = null
 
-    // 1. Race the Art APIs & Lyrics APIs concurrently
     val strictItunesTask = async(Dispatchers.IO) { if (!isUnknownArtist) searchItunesAPI("$cleanTitle $artist") else null }
     val strictSaavnTask = async(Dispatchers.IO) { if (!isUnknownArtist) searchJioSaavnAPI("$cleanTitle $artist") else null }
     val strictDeezerTask = async(Dispatchers.IO) { if (!isUnknownArtist) searchDeezerAPI("$cleanTitle $artist") else null }
@@ -586,8 +665,7 @@ suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSon
         
     var foundLyrics = strictLyricsTask.await()
 
-    // 2. If Art failed, try loose matching
-    if (result == null) {
+    if (result == null && isUnknownArtist) {
         val looseItunesTask = async(Dispatchers.IO) { searchItunesAPI(cleanTitle) }
         val looseSaavnTask = async(Dispatchers.IO) { searchJioSaavnAPI(cleanTitle) }
         val looseDeezerTask = async(Dispatchers.IO) { searchDeezerAPI(cleanTitle) }
@@ -596,12 +674,10 @@ suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSon
         result = looseItunesTask.await() ?: looseSaavnTask.await() ?: looseDeezerTask.await() ?: looseYoutubeTask.await()
     }
     
-    // 3. If Lyrics failed on strict match, try loose matching
     if (foundLyrics == null && !isUnknownArtist) {
         foundLyrics = searchLyricsAPI(cleanTitle, "")
     }
 
-    // Combine whatever we successfully found
     if (result != null) {
         return@coroutineScope result.copy(lyrics = foundLyrics)
     } else if (foundLyrics != null) {
