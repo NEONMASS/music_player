@@ -3,8 +3,7 @@ package com.neo.musicplayer
 import android.Manifest
 import android.content.*
 import android.net.Uri
-import android.os.Build
-import android.os.Bundle
+import android.os.*
 import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -38,31 +37,31 @@ import kotlinx.coroutines.*
 import org.json.*
 import java.net.*
 
-// --- THEME & DATA ---
+private val PastelLavenderLight = Color(0xFFB39DDB)
+private val PastelBackgroundLight = Color(0xFFFDFBFD)
+private val PastelSurfaceLight = Color(0xFFF4EFFC)
+private val PastelLavenderDark = Color(0xFFD1B3FF)
+private val PastelBackgroundDark = Color(0xFF1E1E2E)
+private val PastelSurfaceDark = Color(0xFF2A2A3C)
+
 @Composable
 fun AestheticTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
-    val colors = if (darkTheme) darkColorScheme(primary = Color(0xFFD1B3FF), background = Color(0xFF1E1E2E), surface = Color(0xFF2A2A3C), onSurface = Color(0xFFE0E0E0))
-    else lightColorScheme(primary = Color(0xFFB39DDB), background = Color(0xFFFDFBFD), surface = Color(0xFFF4EFFC), onSurface = Color(0xFF4A4A4A))
-    MaterialTheme(colorScheme = colors, content = content)
+    val colorScheme = if (darkTheme) darkColorScheme(primary = PastelLavenderDark, background = PastelBackgroundDark, surface = PastelSurfaceDark, onSurface = Color(0xFFE0E0E0)) else lightColorScheme(primary = PastelLavenderLight, background = PastelBackgroundLight, surface = PastelSurfaceLight, onSurface = Color(0xFF4A4A4A))
+    MaterialTheme(colorScheme = colorScheme, content = content)
 }
 
 @Composable
 fun BlueWhiteFallback(modifier: Modifier = Modifier, iconSize: Dp = 48.dp) {
-    Box(modifier = modifier.background(Brush.linearGradient(listOf(Color(0xFF1976D2), Color(0xFFBBDEFB)))), contentAlignment = Alignment.Center) {
-        Icon(Icons.Default.MusicNote, contentDescription = null, tint = Color.White.copy(alpha = 0.9f), modifier = Modifier.size(iconSize))
-    }
+    Box(modifier = modifier.background(Brush.linearGradient(listOf(Color(0xFF1976D2), Color(0xFFBBDEFB)))), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, contentDescription = "Music", tint = Color.White.copy(alpha = 0.9f), modifier = Modifier.size(iconSize)) }
 }
 
-data class LocalSong(val id: Long, val title: String, val artist: String, val albumId: Long, val webStreamUrl: String? = null, val customArtUrl: String? = null) { 
-    val albumArtUri: Uri get() = if(customArtUrl != null) Uri.parse(customArtUrl) else Uri.parse("content://media/external/audio/albumart/$albumId") 
-}
+data class LocalSong(val id: Long, val title: String, val artist: String, val albumId: Long, val webStreamUrl: String? = null, val customArtUrl: String? = null) { val albumArtUri: Uri get() = if(customArtUrl != null) Uri.parse(customArtUrl) else Uri.parse("content://media/external/audio/albumart/$albumId") }
 data class InternetSongData(val id: String = "", val title: String, val artist: String, val artUrl: String, val lyrics: String? = null)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); setContent { AestheticTheme { MusicPlayerUI() } } }
 }
 
-// --- UNIVERSAL TRACK UI COMPONENT (SAVES 100+ LINES) ---
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TrackRow(songId: Long, title: String, artist: String, artUrl: String, isPlaying: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
@@ -79,14 +78,10 @@ fun TrackRow(songId: Long, title: String, artist: String, artUrl: String, isPlay
     }
 }
 
-// --- MAIN UI ---
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MusicPlayerUI() {
-    val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
-    val db = remember { AppDatabase.getDatabase(context).libraryDao() }
-    
+    val context = LocalContext.current; val coroutineScope = rememberCoroutineScope(); val db = remember { AppDatabase.getDatabase(context).libraryDao() }
     val songMemories by db.getAllSongMemories().collectAsState(initial = emptyList())
     val memoryMap = remember(songMemories) { songMemories.associateBy { it.localMediaId } }
     val favoriteMemories by db.getFavoriteSongs().collectAsState(initial = emptyList())
@@ -104,13 +99,15 @@ fun MusicPlayerUI() {
     
     LaunchedEffect(viewingPlaylistId) { viewingPlaylistId?.let { id -> currentPlaylistData = db.getPlaylistWithSongs(id) } }
 
-    var selectedLanguage by remember { mutableStateOf("All") }; val languages = listOf("All", "Tamil", "English", "Hindi")
+    // ADDED "Playlists" Chip for Archive Albums
+    var selectedLanguage by remember { mutableStateOf("All") }
+    val languages = listOf("All", "Tamil", "English", "Hindi", "Playlists")
     var liveSearchResults by remember { mutableStateOf<List<InternetSongData>>(emptyList()) }; var isLiveSearching by remember { mutableStateOf(false) }
 
     LaunchedEffect(searchQuery, selectedLanguage, isSearchActive) {
         if (!isSearchActive) return@LaunchedEffect
         val q = if (searchQuery.isBlank()) if (selectedLanguage == "All") "Top Trending" else "$selectedLanguage Top Trending" else if (selectedLanguage == "All") searchQuery else "$searchQuery $selectedLanguage"
-        delay(300); isLiveSearching = true; liveSearchResults = fetchLiveSearchResults(q); isLiveSearching = false
+        delay(300); isLiveSearching = true; liveSearchResults = fetchLiveSearchResults(q, selectedLanguage); isLiveSearching = false
     }
 
     var currentSong by remember { mutableStateOf<LocalSong?>(null) }; var fetchedInternetData by remember { mutableStateOf<InternetSongData?>(null) } 
@@ -136,6 +133,10 @@ fun MusicPlayerUI() {
     fun playSongList(song: LocalSong, sourceList: List<LocalSong>) {
         autoPlayContext = emptyList(); autoPlayIndex = -1 
         val idx = sourceList.indexOf(song); playQueue = sourceList
+        
+        // FIX: Completely reset the player before giving it a new list to prevent crashes
+        exoPlayer.stop()
+        exoPlayer.clearMediaItems()
         exoPlayer.setMediaItems(sourceList.map { s -> MediaItem.Builder().setUri(s.webStreamUrl ?: ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, s.id).toString()).setMediaId(s.id.toString()).build() })
         if (idx >= 0) exoPlayer.seekTo(idx, C.TIME_UNSET)
         exoPlayer.prepare(); exoPlayer.play()
@@ -174,7 +175,7 @@ fun MusicPlayerUI() {
                 if (iaPlaylist.isNotEmpty()) {
                     withContext(Dispatchers.IO) { iaPlaylist.forEach { db.saveSongMemory(SongEntity(it.id, it.title, it.artist, it.title, it.artist, it.customArtUrl, null, memoryMap[it.id]?.isFavorite ?: false, System.currentTimeMillis())) } }
                     fetchedInternetData = webSongData; playSongList(iaPlaylist.first(), iaPlaylist); showFullScreenPlayer = true
-                } else Toast.makeText(context, "No audio found.", Toast.LENGTH_SHORT).show()
+                } else Toast.makeText(context, "No audio found in archive.", Toast.LENGTH_SHORT).show()
                 return@launch
             }
 
@@ -188,7 +189,12 @@ fun MusicPlayerUI() {
                 val dummyId = -(kotlin.math.abs((webSongData.title + webSongData.artist).hashCode().toLong())).let { if(it==0L) -1L else it }
                 val dummySong = LocalSong(dummyId, webSongData.title, webSongData.artist, -1L, streamUrl, webSongData.artUrl)
                 withContext(Dispatchers.IO) { db.saveSongMemory(SongEntity(dummyId, webSongData.title, webSongData.artist, webSongData.title, webSongData.artist, webSongData.artUrl, null, memoryMap[dummyId]?.isFavorite ?: false, System.currentTimeMillis())) }
-                fetchedInternetData = webSongData; playQueue = listOf(dummySong)
+                fetchedInternetData = webSongData
+                playQueue = listOf(dummySong)
+                
+                // Safe Player Reset
+                exoPlayer.stop()
+                exoPlayer.clearMediaItems()
                 exoPlayer.setMediaItem(MediaItem.Builder().setUri(streamUrl).setMediaId(dummyId.toString()).build()); exoPlayer.prepare(); exoPlayer.play(); showFullScreenPlayer = true
             } else { 
                 Toast.makeText(context, "Failed to extract stream.", Toast.LENGTH_SHORT).show() 
@@ -240,8 +246,8 @@ fun MusicPlayerUI() {
                     NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 8.dp) {
                         NavigationBarItem(icon = { Icon(Icons.Default.Home, null) }, label = { Text("Home", fontSize = 10.sp) }, selected = currentTab == 0 && !isSearchActive, onClick = { currentTab = 0; isSearchActive = false; viewingLikedSongs = false; viewingPlaylistId = null })
                         NavigationBarItem(icon = { Icon(Icons.Default.Search, null) }, label = { Text("Search", fontSize = 10.sp) }, selected = isSearchActive, onClick = { isSearchActive = true; currentTab = 1 })
-                        NavigationBarItem(icon = { Icon(Icons.Default.QueueMusic, null) }, label = { Text("Playlists", fontSize = 10.sp) }, selected = currentTab == 2 && !isSearchActive, onClick = { currentTab = 2; isSearchActive = false })
-                        NavigationBarItem(icon = { Icon(Icons.Default.Folder, null) }, label = { Text("Tracks", fontSize = 10.sp) }, selected = currentTab == 3 && !isSearchActive, onClick = { currentTab = 3; isSearchActive = false; viewingLikedSongs = false; viewingPlaylistId = null })
+                        NavigationBarItem(icon = { Icon(Icons.Default.QueueMusic, null) }, label = { Text("Library", fontSize = 10.sp) }, selected = currentTab == 2 && !isSearchActive, onClick = { currentTab = 2; isSearchActive = false })
+                        NavigationBarItem(icon = { Icon(Icons.Default.Folder, null) }, label = { Text("Offline", fontSize = 10.sp) }, selected = currentTab == 3 && !isSearchActive, onClick = { currentTab = 3; isSearchActive = false; viewingLikedSongs = false; viewingPlaylistId = null })
                     }
                 }
             }, containerColor = MaterialTheme.colorScheme.background
@@ -319,7 +325,24 @@ fun MusicPlayerUI() {
         
         AnimatedVisibility(visible = showFullScreenPlayer && currentSong != null, enter = slideInVertically(initialOffsetY = { it }), exit = slideOutVertically(targetOffsetY = { it })) {
             if (currentSong != null) {
-                FullScreenPlayer(song = currentSong!!, internetData = fetchedInternetData, isPlaying = isPlaying, currentPosition = currentPosition, totalDuration = totalDuration, isFavorite = memoryMap[currentSong?.id]?.isFavorite == true, queueList = playQueue, memoryMap = memoryMap, playSong = { qSong -> if(qSong.id<0) { playWebSong(InternetSongData("", qSong.title, qSong.artist, qSong.customArtUrl?:"")) } else playSongList(qSong, playQueue) }, onRemoveFromQueue = { idx -> if (idx in playQueue.indices) { playQueue = playQueue.toMutableList().apply { removeAt(idx) }; if (idx in 0 until exoPlayer.mediaItemCount) try { exoPlayer.removeMediaItem(idx) } catch(e: Exception){} } }, onClose = { showFullScreenPlayer = false }, onPlayPause = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }, onNext = { exoPlayer.seekToNextMediaItem() }, onPrev = { exoPlayer.seekToPreviousMediaItem() }, onSeek = { percentage -> exoPlayer.seekTo((percentage * totalDuration).toLong()); currentPosition = (percentage * totalDuration).toLong() }, onToggleFavorite = { toggleFavorite() })
+                FullScreenPlayer(song = currentSong!!, internetData = fetchedInternetData, isPlaying = isPlaying, currentPosition = currentPosition, totalDuration = totalDuration, isFavorite = memoryMap[currentSong?.id]?.isFavorite == true, queueList = playQueue, memoryMap = memoryMap, playSong = { qSong -> if(qSong.id<0) { playWebSong(InternetSongData("", qSong.title, qSong.artist, qSong.customArtUrl?:"")) } else playSongList(qSong, playQueue) }, 
+                onRemoveFromQueue = { idx -> 
+                    // FIX: Safe Queue Deletion Logic
+                    if (idx in playQueue.indices) { 
+                        playQueue = playQueue.toMutableList().apply { removeAt(idx) }
+                        if (idx in 0 until exoPlayer.mediaItemCount) {
+                            try { 
+                                exoPlayer.removeMediaItem(idx) 
+                                if (exoPlayer.mediaItemCount == 0) {
+                                    exoPlayer.stop()
+                                    exoPlayer.clearMediaItems()
+                                    isPlaying = false
+                                }
+                            } catch(e: Exception){} 
+                        }
+                    } 
+                }, 
+                onClose = { showFullScreenPlayer = false }, onPlayPause = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }, onNext = { exoPlayer.seekToNextMediaItem() }, onPrev = { exoPlayer.seekToPreviousMediaItem() }, onSeek = { percentage -> exoPlayer.seekTo((percentage * totalDuration).toLong()); currentPosition = (percentage * totalDuration).toLong() }, onToggleFavorite = { toggleFavorite() })
             }
         }
 
@@ -427,10 +450,10 @@ fun FullScreenPlayer(song: LocalSong, internetData: InternetSongData?, isPlaying
 
 @Composable
 fun PlayerControlsBar(currentSong: LocalSong, internetData: InternetSongData?, isPlaying: Boolean, currentPosition: Long, totalDuration: Long, onPlayPause: () -> Unit, onNext: () -> Unit, onPrev: () -> Unit, onBarClick: () -> Unit) {
-    val displayTitle = internetData?.title ?: currentSong.title; val displayArtist = internetData?.artist ?: currentSong.artist; val displayArt = internetData?.artUrl?.takeIf { it.isNotEmpty() } ?: currentSong.customArtUrl ?: currentSong.albumArtUri.toString()
+    val displayTitle = internetData?.title ?: currentSong.title; val displayArtist = internetData?.artist ?: currentSong.artist; val displayArt: String = internetData?.artUrl?.takeIf { it.isNotEmpty() } ?: currentSong.customArtUrl ?: currentSong.albumArtUri.toString()
     Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth().clickable { onBarClick() }, shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), shadowElevation = 8.dp) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-            LinearProgressIndicator(progress = { if (totalDuration > 0) currentPosition.toFloat() / totalDuration.toFloat() else 0f }, modifier = Modifier.fillMaxWidth().height(2.dp), color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+            LinearProgressIndicator(progress = { (if (totalDuration > 0) currentPosition.toFloat() / totalDuration.toFloat() else 0f).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().height(2.dp), color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
             Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)), error = { BlueWhiteFallback(modifier = Modifier.fillMaxSize(), iconSize = 20.dp) }, loading = { BlueWhiteFallback(modifier = Modifier.fillMaxSize(), iconSize = 20.dp) })
                 Spacer(modifier = Modifier.width(12.dp))
@@ -441,7 +464,6 @@ fun PlayerControlsBar(currentSong: LocalSong, internetData: InternetSongData?, i
     }
 }
 
-// --- LOGIC & NETWORK HELPERS ---
 fun fetchLocalMusic(context: Context): List<LocalSong> {
     val songs = mutableListOf<LocalSong>(); val uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
     val proj = arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST, MediaStore.Audio.Media.ALBUM_ID)
@@ -464,34 +486,45 @@ private fun fetchHttp(urlStr: String): String? {
     } catch (e: Exception) { null }
 }
 
-suspend fun fetchLiveSearchResults(query: String): List<InternetSongData> = coroutineScope {
+suspend fun fetchLiveSearchResults(query: String, language: String): List<InternetSongData> = coroutineScope {
     val results = mutableListOf<InternetSongData>()
+
+    val searchPlaylists = language == "Playlists" || query.contains("ost", ignoreCase = true) || query.contains("anime", ignoreCase = true)
 
     val saavnTask = async(Dispatchers.IO) {
         val saavnList = mutableListOf<InternetSongData>()
-        val res = fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&query=${URLEncoder.encode(query, "UTF-8")}")
-        if (res != null) {
-            val arr = JSONObject(res).optJSONObject("songs")?.optJSONArray("data")
-            if (arr != null) {
-                for (i in 0 until arr.length()) {
-                    val t = arr.getJSONObject(i); val info = t.optJSONObject("more_info")
-                    saavnList.add(InternetSongData(t.optString("id", ""), t.optString("title", "").replace("&quot;", "\"").replace("&amp;", "&"), info?.optString("singers", "") ?: info?.optString("primary_artists", "") ?: "", t.optString("image", "").replace("50x50.jpg", "500x500.jpg")))
+        if (language != "Playlists") {
+            val res = fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&query=${URLEncoder.encode(query, "UTF-8")}")
+            if (res != null) {
+                val arr = JSONObject(res).optJSONObject("songs")?.optJSONArray("data")
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val t = arr.getJSONObject(i); val info = t.optJSONObject("more_info")
+                        saavnList.add(InternetSongData(t.optString("id", ""), t.optString("title", "").replace("&quot;", "\"").replace("&amp;", "&"), info?.optString("singers", "") ?: info?.optString("primary_artists", "") ?: "", t.optString("image", "").replace("50x50.jpg", "500x500.jpg")))
+                    }
                 }
             }
         }
         saavnList
     }
 
+    // FIX: Strict Archive Filtering to prevent News/Podcasts.
     val archiveTask = async(Dispatchers.IO) {
         val iaList = mutableListOf<InternetSongData>()
-        val exactQuery = "$query AND mediatype:audio AND (subject:\"music\" OR subject:\"anime\" OR subject:\"soundtrack\" OR collection:\"audio_music\" OR collection:\"etree\") AND NOT subject:\"news\" AND NOT subject:\"podcast\""
-        val res = fetchHttp("https://archive.org/advancedsearch.php?q=${URLEncoder.encode(exactQuery, "UTF-8")}&fl[]=identifier,title,creator&rows=10&output=json")
-        if (res != null) {
-            val docs = JSONObject(res).optJSONObject("response")?.optJSONArray("docs")
-            if (docs != null) {
-                for (i in 0 until docs.length()) {
-                    val t = docs.getJSONObject(i); val id = t.optString("identifier", "")
-                    if (id.isNotBlank()) iaList.add(InternetSongData("ia:$id", t.optString("title", "Unknown Album"), t.optString("creator", "Archive OST"), "https://archive.org/services/img/$id"))
+        if (searchPlaylists) {
+            val exactQuery = if (query.isBlank() && language == "Playlists") {
+                "(title:\"ost\" OR title:\"soundtrack\") AND mediatype:audio AND subject:\"anime\" AND NOT subject:\"podcast\" AND NOT subject:\"news\""
+            } else {
+                "$query AND mediatype:audio AND (subject:\"music\" OR subject:\"anime\" OR subject:\"soundtrack\" OR title:\"ost\") AND NOT subject:\"news\" AND NOT subject:\"podcast\""
+            }
+            val res = fetchHttp("https://archive.org/advancedsearch.php?q=${URLEncoder.encode(exactQuery, "UTF-8")}&fl[]=identifier,title,creator&rows=15&output=json")
+            if (res != null) {
+                val docs = JSONObject(res).optJSONObject("response")?.optJSONArray("docs")
+                if (docs != null) {
+                    for (i in 0 until docs.length()) {
+                        val t = docs.getJSONObject(i); val id = t.optString("identifier", "")
+                        if (id.isNotBlank()) iaList.add(InternetSongData("ia:$id", t.optString("title", "Unknown Album"), t.optString("creator", "Archive OST"), "https://archive.org/services/img/$id"))
+                    }
                 }
             }
         }
