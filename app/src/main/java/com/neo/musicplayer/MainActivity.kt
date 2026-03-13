@@ -197,45 +197,57 @@ fun MusicPlayerUI() {
         exoPlayer.play()
     }
 
-    fun playWebSong(webSongData: InternetSongData) {
+fun playWebSong(webSongData: InternetSongData) {
         coroutineScope.launch {
             if (webSongData.id.startsWith("ia:")) {
-                Toast.makeText(context, "Fetching Anime Album...", Toast.LENGTH_SHORT).show()
-                val identifier = webSongData.id.removePrefix("ia:")
-                val metaConn = URL("https://archive.org/metadata/$identifier").openConnection() as HttpURLConnection
-                metaConn.setRequestProperty("User-Agent", "Mozilla/5.0")
-                if (metaConn.responseCode == 200) {
-                    val metaJson = JSONObject(metaConn.inputStream.bufferedReader().readText())
-                    val files = metaJson.optJSONArray("files")
-                    val iaPlaylist = mutableListOf<LocalSong>()
-                    if (files != null) {
-                        for (i in 0 until files.length()) {
-                            val f = files.getJSONObject(i)
-                            val format = f.optString("format", "").lowercase()
-                            val name = f.optString("name", "")
-                            if (format.contains("mp3") || format.contains("flac") || name.endsWith(".mp3") || name.endsWith(".m4a") || name.endsWith(".ogg")) {
-                                val streamUrl = "https://archive.org/download/$identifier/${Uri.encode(name)}"
-                                val trackTitle = f.optString("title").takeIf { it.isNotBlank() } ?: name.substringBeforeLast(".")
-                                val trackArtist = f.optString("creator").takeIf { it.isNotBlank() } ?: webSongData.artist
-                                var dummyId = -(kotlin.math.abs((trackTitle + trackArtist).hashCode().toLong()))
-                                if (dummyId == 0L) dummyId = -1L
-                                val s = LocalSong(dummyId, trackTitle, trackArtist, -1L, streamUrl, webSongData.artUrl)
-                                iaPlaylist.add(s)
-                                db.saveSongMemory(SongEntity(dummyId, trackTitle, trackArtist, trackTitle, trackArtist, webSongData.artUrl, null, memoryMap[dummyId]?.isFavorite ?: false, System.currentTimeMillis()))
+                Toast.makeText(context, "Fetching Archive Album...", Toast.LENGTH_SHORT).show()
+                
+                // CRITICAL FIX: Move network request to IO thread to prevent the app crash!
+                val iaPlaylist = withContext(Dispatchers.IO) {
+                    val identifier = webSongData.id.removePrefix("ia:")
+                    val list = mutableListOf<LocalSong>()
+                    try {
+                        val metaConn = URL("https://archive.org/metadata/$identifier").openConnection() as HttpURLConnection
+                        metaConn.setRequestProperty("User-Agent", "Mozilla/5.0")
+                        if (metaConn.responseCode == 200) {
+                            val metaJson = JSONObject(metaConn.inputStream.bufferedReader().readText())
+                            val files = metaJson.optJSONArray("files")
+                            if (files != null) {
+                                for (i in 0 until files.length()) {
+                                    val f = files.getJSONObject(i)
+                                    val format = f.optString("format", "").lowercase()
+                                    val name = f.optString("name", "")
+                                    if (format.contains("mp3") || format.contains("flac") || name.endsWith(".mp3") || name.endsWith(".m4a") || name.endsWith(".ogg")) {
+                                        val streamUrl = "https://archive.org/download/$identifier/${Uri.encode(name)}"
+                                        val trackTitle = f.optString("title").takeIf { it.isNotBlank() } ?: name.substringBeforeLast(".")
+                                        val trackArtist = f.optString("creator").takeIf { it.isNotBlank() } ?: webSongData.artist
+                                        var dummyId = -(kotlin.math.abs((trackTitle + trackArtist).hashCode().toLong()))
+                                        if (dummyId == 0L) dummyId = -1L
+                                        list.add(LocalSong(dummyId, trackTitle, trackArtist, -1L, streamUrl, webSongData.artUrl))
+                                    }
+                                }
                             }
                         }
-                    }
-                    if (iaPlaylist.isNotEmpty()) { 
-                        fetchedInternetData = webSongData
-                        playSongList(iaPlaylist.first(), iaPlaylist)
-                        showFullScreenPlayer = true
-                        return@launch 
-                    }
+                    } catch (e: Exception) { e.printStackTrace() }
+                    list
                 }
-                Toast.makeText(context, "No audio found in archive.", Toast.LENGTH_SHORT).show()
+
+                if (iaPlaylist.isNotEmpty()) {
+                    coroutineScope.launch(Dispatchers.IO) {
+                        iaPlaylist.forEach { s ->
+                            db.saveSongMemory(SongEntity(s.id, s.title, s.artist, s.title, s.artist, s.customArtUrl, null, memoryMap[s.id]?.isFavorite ?: false, System.currentTimeMillis()))
+                        }
+                    }
+                    fetchedInternetData = webSongData
+                    playSongList(iaPlaylist.first(), iaPlaylist)
+                    showFullScreenPlayer = true
+                } else {
+                    Toast.makeText(context, "No audio found in archive.", Toast.LENGTH_SHORT).show()
+                }
                 return@launch
             }
 
+            // STANDARD ENGINE
             val normalizedWebTitle = webSongData.title.lowercase().replace(Regex("[^a-z0-9]"), "")
             val localMatch = localSongs.find { 
                 val normLocal = it.title.lowercase().replace(Regex("[^a-z0-9]"), "")
@@ -256,7 +268,10 @@ fun MusicPlayerUI() {
                 var dummyId = -(kotlin.math.abs((webSongData.title + webSongData.artist).hashCode().toLong()))
                 if (dummyId == 0L) dummyId = -1L
                 val dummySong = LocalSong(dummyId, webSongData.title, webSongData.artist, -1L, streamUrl, webSongData.artUrl)
-                db.saveSongMemory(SongEntity(localMediaId = dummyId, customTitle = webSongData.title, customArtist = webSongData.artist, fetchedTitle = webSongData.title, fetchedArtist = webSongData.artist, fetchedArtUrl = webSongData.artUrl, fetchedLyrics = null, isFavorite = memoryMap[dummyId]?.isFavorite ?: false, lastPlayedAt = System.currentTimeMillis()))
+                
+                withContext(Dispatchers.IO) {
+                    db.saveSongMemory(SongEntity(localMediaId = dummyId, customTitle = webSongData.title, customArtist = webSongData.artist, fetchedTitle = webSongData.title, fetchedArtist = webSongData.artist, fetchedArtUrl = webSongData.artUrl, fetchedLyrics = null, isFavorite = memoryMap[dummyId]?.isFavorite ?: false, lastPlayedAt = System.currentTimeMillis()))
+                }
                 
                 fetchedInternetData = webSongData
                 playQueue = listOf(dummySong)
@@ -606,9 +621,13 @@ fun MusicPlayerUI() {
                     song = currentSong!!, internetData = fetchedInternetData, isPlaying = isPlaying, currentPosition = currentPosition, totalDuration = totalDuration, isFavorite = isFav, queueList = playQueue, memoryMap = memoryMap, 
                     playSong = { qSong -> if(qSong.id<0) { playWebSong(InternetSongData("", qSong.title, qSong.artist, qSong.customArtUrl?:"")) } else playSongList(qSong, playQueue) }, 
                     onRemoveFromQueue = { idx -> 
-                        val newQ = playQueue.toMutableList().apply { removeAt(idx) }
-                        playQueue = newQ
-                        exoPlayer.removeMediaItem(idx) 
+                        if (idx >= 0 && idx < playQueue.size) {
+                            val newQ = playQueue.toMutableList().apply { removeAt(idx) }
+                            playQueue = newQ
+                            if (idx >= 0 && idx < exoPlayer.mediaItemCount) {
+                                try { exoPlayer.removeMediaItem(idx) } catch(e: Exception) {}
+                            }
+                        }
                     }, 
                     onClose = { showFullScreenPlayer = false }, onPlayPause = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }, onNext = { exoPlayer.seekToNextMediaItem() }, onPrev = { exoPlayer.seekToPreviousMediaItem() }, onSeek = { percentage -> val seekPosition = (percentage * totalDuration).toLong(); exoPlayer.seekTo(seekPosition); currentPosition = seekPosition }, onToggleFavorite = { toggleFavorite() }
                 )
@@ -856,7 +875,10 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
     val archiveTask = async(Dispatchers.IO) {
         val iaList = mutableListOf<InternetSongData>()
         try {
-            val q = URLEncoder.encode("$query AND mediatype:audio", "UTF-8")
+            // CRITICAL FIX: Strictly filter out news/podcasts, only allow Music and Anime!
+            val exactQuery = "$query AND mediatype:audio AND (subject:\"music\" OR subject:\"anime\" OR subject:\"soundtrack\" OR collection:\"audio_music\" OR collection:\"etree\") AND NOT subject:\"news\" AND NOT subject:\"podcast\""
+            val q = URLEncoder.encode(exactQuery, "UTF-8")
+            
             val conn = URL("https://archive.org/advancedsearch.php?q=$q&fl[]=identifier,title,creator&rows=10&output=json").openConnection() as HttpURLConnection
             conn.setRequestProperty("User-Agent", "Mozilla/5.0")
             conn.connectTimeout = 4000
@@ -874,11 +896,6 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
         } catch (e: Exception) { e.printStackTrace() }
         iaList
     }
-
-    results.addAll(saavnTask.await())
-    results.addAll(archiveTask.await()) 
-    return@coroutineScope results
-}
 
 suspend fun fetchAudioStreamUrl(title: String, artist: String, saavnId: String = ""): String? = withContext(Dispatchers.IO) {
     if (saavnId.isNotBlank() && !saavnId.startsWith("ia:")) {
