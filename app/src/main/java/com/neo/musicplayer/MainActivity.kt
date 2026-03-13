@@ -180,7 +180,7 @@ fun MusicPlayerUI() {
     
     DisposableEffect(Unit) { onDispose { exoPlayer.release() } }
 
-    val playSongList: (LocalSong, List<LocalSong>) -> Unit = { song, sourceList ->
+    fun playSongList(song: LocalSong, sourceList: List<LocalSong>) {
         autoPlayContext = emptyList()
         autoPlayIndex = -1 
         val idx = sourceList.indexOf(song)
@@ -197,7 +197,7 @@ fun MusicPlayerUI() {
         exoPlayer.play()
     }
 
-    val playWebSong: (InternetSongData) -> Unit = { webSongData ->
+    fun playWebSong(webSongData: InternetSongData) {
         coroutineScope.launch {
             if (webSongData.id.startsWith("ia:")) {
                 Toast.makeText(context, "Fetching Anime Album...", Toast.LENGTH_SHORT).show()
