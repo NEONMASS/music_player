@@ -132,7 +132,6 @@ fun MusicPlayerUI() {
     fun playSongList(song: LocalSong, sourceList: List<LocalSong>) {
         autoPlayContext = emptyList(); autoPlayIndex = -1 
         val idx = sourceList.indexOf(song); playQueue = sourceList
-        
         exoPlayer.stop(); exoPlayer.clearMediaItems()
         exoPlayer.setMediaItems(sourceList.map { s -> MediaItem.Builder().setUri(s.webStreamUrl ?: ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, s.id).toString()).setMediaId(s.id.toString()).build() })
         if (idx >= 0) exoPlayer.seekTo(idx, C.TIME_UNSET)
@@ -153,13 +152,9 @@ fun MusicPlayerUI() {
                             val trackMap = mutableMapOf<String, JSONObject>()
                             for (i in 0 until files.length()) {
                                 val f = files.getJSONObject(i); val format = f.optString("format", "").lowercase()
-                                val rawName = f.optString("name", "")
-                                val lowerName = rawName.lowercase()
-                                
-                                // FIX 1: Strictly ignore unplayable metadata, xml, and image files to prevent skip errors
+                                val rawName = f.optString("name", ""); val lowerName = rawName.lowercase()
                                 if (lowerName.endsWith(".xml") || lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg") || lowerName.endsWith(".png") || lowerName.endsWith(".sqlite") || lowerName.endsWith(".txt")) continue
-                                
-                                if (format.contains("mp3") || format.contains("flac") || format.contains("m4a") || format.contains("ogg") || lowerName.endsWith(".mp3") || lowerName.endsWith(".m4a")) {
+                                if (format.contains("mp3") || format.contains("flac") || format.contains("ogg") || lowerName.endsWith(".mp3") || lowerName.endsWith(".m4a")) {
                                     val baseName = rawName.substringBeforeLast(".")
                                     if (trackMap[baseName] == null || format.contains("mp3")) trackMap[baseName] = f
                                 }
@@ -184,7 +179,8 @@ fun MusicPlayerUI() {
             }
 
             val cleanTitle = webSongData.title.lowercase().replace(Regex("[^a-z0-9]"), "")
-            val localMatch = localSongs.find { it.title.lowercase().replace(Regex("[^a-z0-9]"), "").let { n -> n == cleanTitle || n.contains(cleanTitle) || cleanTitle.contains(n) } }
+            // FIX: Safe local matching to prevent infinite matching on empty names
+            val localMatch = if (cleanTitle.isNotBlank()) localSongs.find { it.title.lowercase().replace(Regex("[^a-z0-9]"), "").let { n -> n == cleanTitle || n.contains(cleanTitle) || cleanTitle.contains(n) } } else null
             if (localMatch != null) { Toast.makeText(context, "Playing offline file.", Toast.LENGTH_SHORT).show(); playSongList(localMatch, localSongs); showFullScreenPlayer = true; return@launch }
             
             Toast.makeText(context, "Extracting audio...", Toast.LENGTH_SHORT).show()
@@ -197,7 +193,7 @@ fun MusicPlayerUI() {
                 exoPlayer.stop(); exoPlayer.clearMediaItems()
                 exoPlayer.setMediaItem(MediaItem.Builder().setUri(streamUrl).setMediaId(dummyId.toString()).build()); exoPlayer.prepare(); exoPlayer.play(); showFullScreenPlayer = true
             } else { 
-                Toast.makeText(context, "Failed to extract stream.", Toast.LENGTH_SHORT).show() 
+                Toast.makeText(context, "Stream unplayable. Skipping...", Toast.LENGTH_SHORT).show() 
                 if (autoPlayContext.isNotEmpty() && autoPlayIndex in 0 until autoPlayContext.size - 1) { 
                     coroutineScope.launch { delay(1000); autoPlayIndex++; playWebSong(autoPlayContext[autoPlayIndex]) } 
                 }
@@ -284,15 +280,7 @@ fun MusicPlayerUI() {
                                     LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(bottom = 24.dp)) {
                                         items(recentlyPlayedSongs) { song ->
                                             val mem = memoryMap[song.id]; val dTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title; val dArt = mem?.fetchedArtUrl?.takeIf { it.isNotBlank() } ?: song.albumArtUri.toString()
-                                            
-                                            // FIX 3: Safe clicking from History
-                                            Column(modifier = Modifier.width(120.dp).clickable { 
-                                                if (song.id < 0) { 
-                                                    autoPlayContext = recentlyPlayedSongs.filter { it.id < 0 }.map { InternetSongData(it.id.toString(), it.title, it.artist, it.customArtUrl ?: "") }
-                                                    autoPlayIndex = autoPlayContext.indexOfFirst { it.title == dTitle }
-                                                    if (song.webStreamUrl != null) playSongList(song, listOf(song)) else playWebSong(InternetSongData("", dTitle, song.artist, dArt))
-                                                } else playSongList(song, recentlyPlayedSongs.filter{ it.id >= 0 }) 
-                                            }) {
+                                            Column(modifier = Modifier.width(120.dp).clickable { if (song.id < 0) { autoPlayContext = recentlyPlayedSongs.filter { it.id < 0 }.map { InternetSongData(it.id.toString(), it.title, it.artist, it.customArtUrl ?: "") }; autoPlayIndex = autoPlayContext.indexOfFirst { it.title == dTitle }; if (song.webStreamUrl != null) playSongList(song, listOf(song)) else playWebSong(InternetSongData(song.id.toString(), dTitle, song.artist, dArt)) } else playSongList(song, recentlyPlayedSongs.filter{ it.id >= 0 }) }) {
                                                 SubcomposeAsyncImage(model = dArt, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(120.dp).clip(RoundedCornerShape(12.dp)), error = { BlueWhiteFallback() })
                                                 Spacer(modifier = Modifier.height(6.dp)); Text(dTitle, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                                             }
@@ -307,7 +295,7 @@ fun MusicPlayerUI() {
                                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                                     items(favoriteSongs) { song ->
                                         val mem = memoryMap[song.id]; val dTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title; val dArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist; val dArt = mem?.fetchedArtUrl?.takeIf { it.isNotBlank() } ?: song.albumArtUri.toString()
-                                        TrackRow(song.id, dTitle, dArtist, dArt, currentSong?.id == song.id, onClick = { if (song.id < 0) { if(song.webStreamUrl != null) playSongList(song, listOf(song)) else playWebSong(InternetSongData("", dTitle, dArtist, dArt)) } else playSongList(song, favoriteSongs.filter{it.id>=0}) }, onLongClick = { selectedSongForAction = song })
+                                        TrackRow(song.id, dTitle, dArtist, dArt, currentSong?.id == song.id, onClick = { if (song.id < 0) { if(song.webStreamUrl != null) playSongList(song, listOf(song)) else playWebSong(InternetSongData(song.id.toString(), dTitle, dArtist, dArt)) } else playSongList(song, favoriteSongs.filter{it.id>=0}) }, onLongClick = { selectedSongForAction = song })
                                     }
                                 }
                             } else if (viewingPlaylistId != null && currentPlaylistData != null) {
@@ -316,7 +304,7 @@ fun MusicPlayerUI() {
                                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                                     items(playlistSongs) { song ->
                                         val mem = memoryMap[song.id]; val dTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title; val dArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist; val dArt = mem?.fetchedArtUrl?.takeIf { it.isNotBlank() } ?: song.albumArtUri.toString()
-                                        TrackRow(song.id, dTitle, dArtist, dArt, currentSong?.id == song.id, onClick = { if (song.id < 0) { if(song.webStreamUrl != null) playSongList(song, listOf(song)) else playWebSong(InternetSongData("", dTitle, dArtist, dArt)) } else playSongList(song, playlistSongs.filter{it.id>=0}) }, onLongClick = { selectedSongForAction = song })
+                                        TrackRow(song.id, dTitle, dArtist, dArt, currentSong?.id == song.id, onClick = { if (song.id < 0) { if(song.webStreamUrl != null) playSongList(song, listOf(song)) else playWebSong(InternetSongData(song.id.toString(), dTitle, dArtist, dArt)) } else playSongList(song, playlistSongs.filter{it.id>=0}) }, onLongClick = { selectedSongForAction = song })
                                     }
                                 }
                             } else {
@@ -345,10 +333,9 @@ fun MusicPlayerUI() {
                 
                 FullScreenPlayer(song = currentSong!!, internetData = fetchedInternetData, isPlaying = isPlaying, currentPosition = currentPosition, totalDuration = totalDuration, isFavorite = memoryMap[currentSong?.id]?.isFavorite == true, queueList = playQueue, memoryMap = memoryMap, 
                 playSong = { qSong -> 
-                    // FIX 2: Safely handle Queue manual track selection without triggering a recursive scrape
                     val qIdx = playQueue.indexOf(qSong)
                     if (qIdx in 0 until exoPlayer.mediaItemCount) { exoPlayer.seekTo(qIdx, C.TIME_UNSET); exoPlayer.play() } 
-                    else if (qSong.id < 0 && qSong.webStreamUrl == null) playWebSong(InternetSongData("", qSong.title, qSong.artist, qSong.customArtUrl?:"")) 
+                    else if (qSong.id < 0 && qSong.webStreamUrl == null) playWebSong(InternetSongData(qSong.id.toString(), qSong.title, qSong.artist, qSong.customArtUrl?:"")) 
                     else playSongList(qSong, playQueue)
                 }, 
                 onRemoveFromQueue = { idx -> 
@@ -372,7 +359,7 @@ fun MusicPlayerUI() {
                         if (s.id < 0) {
                             coroutineScope.launch {
                                 Toast.makeText(context, "Fetching stream...", Toast.LENGTH_SHORT).show()
-                                val streamUrl = fetchAudioStreamUrl(s.title, s.artist, fetchedInternetData?.id ?: "")
+                                val streamUrl = fetchAudioStreamUrl(s.title, s.artist, if(s.id.toString().startsWith("-")) "" else s.id.toString())
                                 if (streamUrl != null) {
                                     playQueue = playQueue + s.copy(webStreamUrl = streamUrl)
                                     exoPlayer.addMediaItem(MediaItem.Builder().setUri(streamUrl).setMediaId(s.id.toString()).build())
@@ -520,7 +507,6 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
             val res = fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&query=$q")
             if (res != null) {
                 val json = JSONObject(res)
-                
                 if (isPlaylistSearch) {
                     val plArr = json.optJSONObject("playlists")?.optJSONArray("data")
                     if (plArr != null) {
@@ -530,23 +516,18 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
                         }
                     }
                 }
-
                 val arr = json.optJSONObject("songs")?.optJSONArray("data")
                 if (arr != null) {
                     for (i in 0 until arr.length()) {
-                        val t = arr.getJSONObject(i)
-                        val info = t.optJSONObject("more_info")
-                        val title = t.optString("title", "").replace("&quot;", "\"").replace("&amp;", "&")
-                        
+                        val t = arr.getJSONObject(i); val info = t.optJSONObject("more_info"); val title = t.optString("title", "").replace("&quot;", "\"").replace("&amp;", "&")
                         val isCollection = title.contains("collection", true) || title.contains("list", true) || title.contains("mashup", true) || title.contains("jukebox", true)
                         if (isPlaylistSearch && !isCollection) continue
                         if (!isPlaylistSearch && isCollection) continue
-
                         saavnList.add(InternetSongData(t.optString("id", ""), title, info?.optString("singers", "") ?: info?.optString("primary_artists", "") ?: "", t.optString("image", "").replace("50x50.jpg", "500x500.jpg")))
                     }
                 }
             }
-        } catch (e: Exception) { e.printStackTrace() }
+        } catch (e: Exception) {}
         saavnList
     }
 
@@ -554,11 +535,7 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
         val iaList = mutableListOf<InternetSongData>()
         if (isPlaylistSearch) {
             try {
-                val exactQuery = if (query.isBlank()) {
-                    "(title:\"ost\" OR title:\"soundtrack\" OR title:\"collection\") AND mediatype:audio AND subject:\"anime\" AND NOT subject:\"podcast\" AND NOT subject:\"news\"" 
-                } else {
-                    "($query) AND mediatype:audio AND (ost OR archive OR collection OR list OR complete OR soundtrack OR subject:\"anime\" OR subject:\"music\") AND NOT subject:\"news\" AND NOT subject:\"podcast\""
-                }
+                val exactQuery = if (query.isBlank()) "(title:\"ost\" OR title:\"soundtrack\" OR title:\"collection\") AND mediatype:audio AND subject:\"anime\" AND NOT subject:\"podcast\" AND NOT subject:\"news\"" else "($query) AND mediatype:audio AND (ost OR archive OR collection OR list OR complete OR soundtrack OR subject:\"anime\" OR subject:\"music\") AND NOT subject:\"news\" AND NOT subject:\"podcast\""
                 val res = fetchHttp("https://archive.org/advancedsearch.php?q=${URLEncoder.encode(exactQuery, "UTF-8")}&fl[]=identifier,title,creator&rows=15&output=json")
                 if (res != null) {
                     val docs = JSONObject(res).optJSONObject("response")?.optJSONArray("docs")
@@ -569,7 +546,7 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
                         }
                     }
                 }
-            } catch (e: Exception) { e.printStackTrace() }
+            } catch (e: Exception) {}
         }
         iaList
     }
@@ -585,14 +562,13 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
                         for (i in 0 until minOf(items.length(), 10)) {
                             val t = items.getJSONObject(i)
                             if (t.optString("type") == "stream") {
-                                val url = t.optString("url", "")
-                                val vid = url.replace("/watch?v=", "").substringBefore("&")
+                                val vid = t.optString("url", "").replace("/watch?v=", "").substringBefore("&")
                                 if (vid.isNotBlank()) pipedList.add(InternetSongData("yt:$vid", t.optString("title", ""), t.optString("uploaderName", ""), t.optString("thumbnail", "")))
                             }
                         }
                     }
                 }
-            } catch (e: Exception) { e.printStackTrace() }
+            } catch (e: Exception) {}
         }
         pipedList
     }
@@ -602,9 +578,12 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
 }
 
 suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = ""): String? = withContext(Dispatchers.IO) {
-    if (songId.startsWith("yt:")) {
-        val vid = songId.removePrefix("yt:")
-        val pipedInstances = listOf("pipedapi.tokhmi.xyz", "pipedapi.kavin.rocks", "pipedapi.smnz.de")
+    val isDummyId = songId.toLongOrNull() != null && songId.toLong() < 0
+    val safeSongId = if (isDummyId) "" else songId
+
+    if (safeSongId.startsWith("yt:")) {
+        val vid = safeSongId.removePrefix("yt:")
+        val pipedInstances = listOf("pipedapi.kavin.rocks", "pipedapi.tokhmi.xyz", "pipedapi.smnz.de", "api.piped.asia")
         for (instance in pipedInstances) {
             try {
                 val streamRes = fetchHttp("https://$instance/streams/$vid") ?: continue
@@ -619,54 +598,55 @@ suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = 
                         }
                     }
                 }
-                if (bestUrl == null) {
-                    val hls = JSONObject(streamRes).optString("hls", "")
-                    if (hls.isNotBlank()) bestUrl = hls
-                }
+                if (bestUrl == null) { val hls = JSONObject(streamRes).optString("hls", ""); if (hls.isNotBlank()) bestUrl = hls }
                 if (!bestUrl.isNullOrEmpty()) return@withContext bestUrl
             } catch (e: Exception) {}
         }
     }
 
-    if (songId.isNotBlank() && !songId.startsWith("ia:") && !songId.startsWith("yt:")) {
+    if (safeSongId.isNotBlank() && !safeSongId.startsWith("ia:") && !safeSongId.startsWith("yt:")) {
         val idApis = listOf("https://saavn.dev/api/songs?ids=", "https://saavn.sumit.co/api/songs?ids=")
         for (api in idApis) {
-            val res = fetchHttp("$api$songId")
-            if (res != null) {
-                val json = JSONObject(res)
-                val dataArr = json.optJSONArray("data") ?: json.optJSONObject("data")?.optJSONArray("results")
-                if (dataArr != null && dataArr.length() > 0) {
-                    val downloadUrls = dataArr.getJSONObject(0).optJSONArray("downloadUrl")
-                    if (downloadUrls != null && downloadUrls.length() > 0) {
-                        var bestUrl = ""
-                        for (j in 0 until downloadUrls.length()) { val link = downloadUrls.getJSONObject(j).optString("link", downloadUrls.getJSONObject(j).optString("url", "")); if (link.isNotBlank()) bestUrl = link }
-                        if (bestUrl.isNotBlank()) return@withContext bestUrl.replace("http://", "https://")
+            try {
+                val res = fetchHttp("$api$safeSongId")
+                if (res != null) {
+                    val json = JSONObject(res)
+                    val dataArr = json.optJSONArray("data") ?: json.optJSONObject("data")?.optJSONArray("results")
+                    if (dataArr != null && dataArr.length() > 0) {
+                        val downloadUrls = dataArr.getJSONObject(0).optJSONArray("downloadUrl")
+                        if (downloadUrls != null && downloadUrls.length() > 0) {
+                            var bestUrl = ""
+                            for (j in 0 until downloadUrls.length()) { val link = downloadUrls.getJSONObject(j).optString("link", downloadUrls.getJSONObject(j).optString("url", "")); if (link.isNotBlank()) bestUrl = link }
+                            if (bestUrl.isNotBlank()) return@withContext bestUrl.replace("http://", "https://")
+                        }
                     }
                 }
-            }
+            } catch (e: Exception) {}
         }
     }
 
     val cleanTitle = title.replace(Regex("\\(.*?\\)"), "").replace(Regex("\\[.*?\\]"), "").trim()
     val ytQuery = URLEncoder.encode("$cleanTitle $artist official audio", "UTF-8")
     
-    val pipedInstances = listOf("pipedapi.tokhmi.xyz", "pipedapi.kavin.rocks", "pipedapi.smnz.de")
+    val pipedInstances = listOf("pipedapi.kavin.rocks", "pipedapi.tokhmi.xyz", "pipedapi.smnz.de", "api.piped.asia")
     for (instance in pipedInstances) {
-        val searchRes = fetchHttp("https://$instance/search?q=$ytQuery&filter=all") ?: continue
-        val items = JSONObject(searchRes).optJSONArray("items") ?: continue
-        var videoId = ""
-        for (i in 0 until items.length()) { if (items.getJSONObject(i).optString("type") == "stream") { videoId = items.getJSONObject(i).optString("url", "").replace("/watch?v=", "").substringBefore("&"); break } }
-        if (videoId.isEmpty()) continue
-        
-        val streamRes = fetchHttp("https://$instance/streams/$videoId") ?: continue
-        val audioStreams = JSONObject(streamRes).optJSONArray("audioStreams") ?: continue
-        var bestUrl: String? = null; var highestBitrate = 0
-        for (i in 0 until audioStreams.length()) {
-            val stream = audioStreams.getJSONObject(i)
-            val format = stream.optString("format", "").lowercase(); val mimeType = stream.optString("mimeType", "").lowercase(); val bitrate = stream.optInt("bitrate", 0)
-            if (format.contains("m4a") || format.contains("webm") || mimeType.contains("audio")) { if (bitrate >= highestBitrate) { highestBitrate = bitrate; bestUrl = stream.optString("url", "") } }
-        }
-        if (!bestUrl.isNullOrEmpty()) return@withContext bestUrl
+        try {
+            val searchRes = fetchHttp("https://$instance/search?q=$ytQuery&filter=all") ?: continue
+            val items = JSONObject(searchRes).optJSONArray("items") ?: continue
+            var videoId = ""
+            for (i in 0 until items.length()) { if (items.getJSONObject(i).optString("type") == "stream") { videoId = items.getJSONObject(i).optString("url", "").replace("/watch?v=", "").substringBefore("&"); break } }
+            if (videoId.isEmpty()) continue
+            
+            val streamRes = fetchHttp("https://$instance/streams/$videoId") ?: continue
+            val audioStreams = JSONObject(streamRes).optJSONArray("audioStreams") ?: continue
+            var bestUrl: String? = null; var highestBitrate = 0
+            for (i in 0 until audioStreams.length()) {
+                val stream = audioStreams.getJSONObject(i)
+                val format = stream.optString("format", "").lowercase(); val mimeType = stream.optString("mimeType", "").lowercase(); val bitrate = stream.optInt("bitrate", 0)
+                if (format.contains("m4a") || format.contains("webm") || mimeType.contains("audio")) { if (bitrate >= highestBitrate) { highestBitrate = bitrate; bestUrl = stream.optString("url", "") } }
+            }
+            if (!bestUrl.isNullOrEmpty()) return@withContext bestUrl
+        } catch(e: Exception) {}
     }
     return@withContext null
 }
@@ -675,16 +655,16 @@ suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSon
     val cleanTitle = title.lowercase().replace(".mp3", "").replace(".m4a", "").replace(".wav", "").replace("y2mate.com", "").replace("y2mate", "").replace("official video", "").replace("official audio", "").replace("lyrics", "").replace("hd", "").replace("slowed", "").replace("reverb", "").replace(Regex("\\b\\d{2,4}[-/_]\\d{2}[-/_]\\d{2,4}\\b"), "").replace(Regex("\\b\\d{6,10}\\b"), "").replace(Regex("[^a-zA-Z0-9 ]"), " ").replace(Regex("\\s+"), " ").trim()
     val isUnknownArtist = artist.contains("unknown", ignoreCase = true)
     
-    val t1 = async(Dispatchers.IO) { if (!isUnknownArtist) fetchHttp("https://itunes.apple.com/search?term=${URLEncoder.encode("$cleanTitle $artist", "UTF-8")}&media=music&entity=song&limit=1")?.let { JSONObject(it).optJSONArray("results")?.optJSONObject(0)?.let { t -> InternetSongData("", t.optString("trackName", ""), t.optString("artistName", ""), t.optString("artworkUrl100", "").replace("100x100bb", "600x600bb")) } } else null }
-    val t2 = async(Dispatchers.IO) { if (!isUnknownArtist) fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&query=${URLEncoder.encode("$cleanTitle $artist", "UTF-8")}")?.let { JSONObject(it).optJSONObject("songs")?.optJSONArray("data")?.optJSONObject(0)?.let { t -> InternetSongData("", t.optString("title", "").replace("&quot;", "\"").replace("&amp;", "&"), t.optJSONObject("more_info")?.optString("primary_artists", "") ?: "", t.optString("image", "").replace("50x50.jpg", "500x500.jpg")) } } else null }
+    val t1 = async(Dispatchers.IO) { try { if (!isUnknownArtist) fetchHttp("https://itunes.apple.com/search?term=${URLEncoder.encode("$cleanTitle $artist", "UTF-8")}&media=music&entity=song&limit=1")?.let { JSONObject(it).optJSONArray("results")?.optJSONObject(0)?.let { t -> InternetSongData("", t.optString("trackName", ""), t.optString("artistName", ""), t.optString("artworkUrl100", "").replace("100x100bb", "600x600bb")) } } else null } catch(e:Exception){null} }
+    val t2 = async(Dispatchers.IO) { try { if (!isUnknownArtist) fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&query=${URLEncoder.encode("$cleanTitle $artist", "UTF-8")}")?.let { JSONObject(it).optJSONObject("songs")?.optJSONArray("data")?.optJSONObject(0)?.let { t -> InternetSongData("", t.optString("title", "").replace("&quot;", "\"").replace("&amp;", "&"), t.optJSONObject("more_info")?.optString("primary_artists", "") ?: "", t.optString("image", "").replace("50x50.jpg", "500x500.jpg")) } } else null } catch(e:Exception){null} }
     val t3 = async(Dispatchers.IO) { searchLyricsAPI(cleanTitle, if (!isUnknownArtist) artist else "") }
 
     var result = t1.await() ?: t2.await()
     var lyrics = t3.await()
 
     if (result == null && isUnknownArtist) {
-        val l1 = async(Dispatchers.IO) { fetchHttp("https://itunes.apple.com/search?term=${URLEncoder.encode(cleanTitle, "UTF-8")}&media=music&entity=song&limit=1")?.let { JSONObject(it).optJSONArray("results")?.optJSONObject(0)?.let { t -> InternetSongData("", t.optString("trackName", ""), t.optString("artistName", ""), t.optString("artworkUrl100", "").replace("100x100bb", "600x600bb")) } } }
-        val l2 = async(Dispatchers.IO) { fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&query=${URLEncoder.encode(cleanTitle, "UTF-8")}")?.let { JSONObject(it).optJSONObject("songs")?.optJSONArray("data")?.optJSONObject(0)?.let { t -> InternetSongData("", t.optString("title", "").replace("&quot;", "\"").replace("&amp;", "&"), t.optJSONObject("more_info")?.optString("primary_artists", "") ?: "", t.optString("image", "").replace("50x50.jpg", "500x500.jpg")) } } }
+        val l1 = async(Dispatchers.IO) { try { fetchHttp("https://itunes.apple.com/search?term=${URLEncoder.encode(cleanTitle, "UTF-8")}&media=music&entity=song&limit=1")?.let { JSONObject(it).optJSONArray("results")?.optJSONObject(0)?.let { t -> InternetSongData("", t.optString("trackName", ""), t.optString("artistName", ""), t.optString("artworkUrl100", "").replace("100x100bb", "600x600bb")) } } } catch(e:Exception){null} }
+        val l2 = async(Dispatchers.IO) { try { fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&query=${URLEncoder.encode(cleanTitle, "UTF-8")}")?.let { JSONObject(it).optJSONObject("songs")?.optJSONArray("data")?.optJSONObject(0)?.let { t -> InternetSongData("", t.optString("title", "").replace("&quot;", "\"").replace("&amp;", "&"), t.optJSONObject("more_info")?.optString("primary_artists", "") ?: "", t.optString("image", "").replace("50x50.jpg", "500x500.jpg")) } } } catch(e:Exception){null} }
         result = l1.await() ?: l2.await()
     }
     
@@ -695,12 +675,14 @@ suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSon
 }
 
 private fun searchLyricsAPI(title: String, artist: String): String? {
-    val res = fetchHttp("https://lrclib.net/api/search?q=${URLEncoder.encode(if (artist.isNotBlank()) "$title $artist" else title, "UTF-8")}") ?: return null
-    val arr = JSONArray(res)
-    for (i in 0 until arr.length()) {
-        val t = arr.getJSONObject(i); val p = t.optString("plainLyrics", ""); val s = t.optString("syncedLyrics", "")
-        if (p.isNotBlank() && p != "null") return p
-        if (s.isNotBlank() && s != "null") return s.replace(Regex("\\[.*?\\]"), "").trim() 
-    }
+    try {
+        val res = fetchHttp("https://lrclib.net/api/search?q=${URLEncoder.encode(if (artist.isNotBlank()) "$title $artist" else title, "UTF-8")}") ?: return null
+        val arr = JSONArray(res)
+        for (i in 0 until arr.length()) {
+            val t = arr.getJSONObject(i); val p = t.optString("plainLyrics", ""); val s = t.optString("syncedLyrics", "")
+            if (p.isNotBlank() && p != "null") return p
+            if (s.isNotBlank() && s != "null") return s.replace(Regex("\\[.*?\\]"), "").trim() 
+        }
+    } catch(e: Exception) {}
     return null
 }
