@@ -36,8 +36,6 @@ import coil.request.ImageRequest
 import kotlinx.coroutines.*
 import org.json.*
 import java.net.*
-import java.text.SimpleDateFormat
-import java.util.*
 
 private val PastelLavenderLight = Color(0xFFB39DDB)
 private val PastelBackgroundLight = Color(0xFFFDFBFD)
@@ -107,9 +105,7 @@ fun MusicPlayerUI() {
 
     LaunchedEffect(searchQuery, selectedLanguage, isSearchActive) {
         if (!isSearchActive) return@LaunchedEffect
-        val currentDate = SimpleDateFormat("MMMM yyyy", Locale.getDefault()).format(Date())
-        val q = if (searchQuery.isBlank()) if (selectedLanguage == "All") "Top Trending $currentDate" else "$selectedLanguage Trending $currentDate" else if (selectedLanguage == "All" || selectedLanguage == "Playlists") searchQuery else "$searchQuery $selectedLanguage"
-        delay(400); isLiveSearching = true; liveSearchResults = fetchLiveSearchResults(q, selectedLanguage); isLiveSearching = false
+        delay(400); isLiveSearching = true; liveSearchResults = fetchLiveSearchResults(searchQuery, selectedLanguage); isLiveSearching = false
     }
 
     var currentSong by remember { mutableStateOf<LocalSong?>(null) }; var fetchedInternetData by remember { mutableStateOf<InternetSongData?>(null) } 
@@ -126,7 +122,9 @@ fun MusicPlayerUI() {
         val httpDataSourceFactory = DefaultHttpDataSource.Factory().setUserAgent("Mozilla/5.0").setAllowCrossProtocolRedirects(true)
         ExoPlayer.Builder(context).setMediaSourceFactory(DefaultMediaSourceFactory(context).setDataSourceFactory(DefaultDataSource.Factory(context, httpDataSourceFactory))).build().apply {
             setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
-            setHandleAudioBecomingNoisy(true); repeatMode = Player.REPEAT_MODE_ALL 
+            setHandleAudioBecomingNoisy(true)
+            // REPEAT_MODE_OFF allows the Recommendation Engine to trigger when the queue ends!
+            repeatMode = Player.REPEAT_MODE_OFF 
         }
     }
     
@@ -135,7 +133,6 @@ fun MusicPlayerUI() {
     fun playSongList(song: LocalSong, sourceList: List<LocalSong>) {
         autoPlayContext = emptyList(); autoPlayIndex = -1 
         val idx = sourceList.indexOf(song); playQueue = sourceList
-        
         exoPlayer.stop(); exoPlayer.clearMediaItems()
         exoPlayer.setMediaItems(sourceList.map { s -> MediaItem.Builder().setUri(s.webStreamUrl ?: ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, s.id).toString()).setMediaId(s.id.toString()).build() })
         if (idx >= 0) exoPlayer.seekTo(idx, C.TIME_UNSET)
@@ -145,41 +142,54 @@ fun MusicPlayerUI() {
     fun playWebSong(webSongData: InternetSongData) {
         coroutineScope.launch {
             if (webSongData.id.startsWith("ia:")) {
-                Toast.makeText(context, "Deep Scanning Archive... Extracting Files", Toast.LENGTH_SHORT).show()
+                withContext(Dispatchers.Main) { Toast.makeText(context, "Deep Scanning Archive... Extracting Files", Toast.LENGTH_SHORT).show() }
+                
                 val iaPlaylist = withContext(Dispatchers.IO) {
                     val id = webSongData.id.removePrefix("ia:")
                     val list = mutableListOf<LocalSong>()
                     try {
-                        val metaJson = JSONObject(fetchHttp("https://archive.org/metadata/$id") ?: "{}")
-                        val files = metaJson.optJSONArray("files")
-                        if (files != null) {
-                            val trackMap = mutableMapOf<String, JSONObject>()
-                            for (i in 0 until files.length()) {
-                                val f = files.getJSONObject(i); val format = f.optString("format", "").lowercase()
-                                val rawName = f.optString("name", ""); val lowerName = rawName.lowercase()
-                                if (lowerName.endsWith(".xml") || lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg") || lowerName.endsWith(".png") || lowerName.endsWith(".sqlite") || lowerName.endsWith(".txt")) continue
-                                if (format.contains("mp3") || format.contains("flac") || format.contains("ogg") || lowerName.endsWith(".mp3") || lowerName.endsWith(".m4a")) {
-                                    val baseName = rawName.substringBeforeLast(".")
-                                    if (trackMap[baseName] == null || format.contains("mp3")) trackMap[baseName] = f
+                        val metaStr = fetchHttp("https://archive.org/metadata/$id")
+                        if (metaStr != null) {
+                            val metaJson = JSONObject(metaStr)
+                            val files = metaJson.optJSONArray("files")
+                            if (files != null) {
+                                val trackMap = mutableMapOf<String, JSONObject>()
+                                for (i in 0 until files.length()) {
+                                    val f = files.getJSONObject(i); val format = f.optString("format", "").lowercase()
+                                    val rawName = f.optString("name", ""); val lowerName = rawName.lowercase()
+                                    if (lowerName.endsWith(".xml") || lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg") || lowerName.endsWith(".png") || lowerName.endsWith(".sqlite") || lowerName.endsWith(".txt")) continue
+                                    if (format.contains("mp3") || format.contains("flac") || format.contains("ogg") || lowerName.endsWith(".mp3") || lowerName.endsWith(".m4a")) {
+                                        val baseName = rawName.substringBeforeLast(".")
+                                        if (trackMap[baseName] == null || format.contains("mp3")) trackMap[baseName] = f
+                                    }
                                 }
-                            }
-                            val sortedTracks = trackMap.values.sortedWith(compareBy({ it.optString("track", "999").replace(Regex("[^0-9]"), "").toIntOrNull() ?: 999 }, { it.optString("name") }))
-                            for (f in sortedTracks) {
-                                val trackTitle = f.optString("title").takeIf { it.isNotBlank() } ?: f.optString("name").substringBeforeLast(".")
-                                val trackArtist = f.optString("creator").takeIf { it.isNotBlank() } ?: webSongData.artist.replace("[Full Album] ", "").replace("[Playlist] ", "")
-                                val dummyId = -(kotlin.math.abs((trackTitle + trackArtist).hashCode().toLong())).let { if(it==0L) -1L else it }
-                                val packedArt = "${webSongData.artUrl}|||ia:$id"
-                                list.add(LocalSong(dummyId, trackTitle, trackArtist, -1L, "https://archive.org/download/$id/${Uri.encode(f.optString("name"))}", packedArt))
+                                val sortedTracks = trackMap.values.sortedWith(compareBy({ it.optString("track", "999").replace(Regex("[^0-9]"), "").toIntOrNull() ?: 999 }, { it.optString("name") }))
+                                for (f in sortedTracks) {
+                                    val trackTitle = f.optString("title").takeIf { it.isNotBlank() } ?: f.optString("name").substringBeforeLast(".")
+                                    val trackArtist = f.optString("creator").takeIf { it.isNotBlank() } ?: webSongData.artist.replace("[Full Album] ", "").replace("[Playlist] ", "")
+                                    val dummyId = -(kotlin.math.abs((trackTitle + trackArtist).hashCode().toLong())).let { if(it==0L) -1L else it }
+                                    list.add(LocalSong(dummyId, trackTitle, trackArtist, -1L, "https://archive.org/download/$id/${Uri.encode(f.optString("name"))}", webSongData.artUrl))
+                                }
                             }
                         }
                     } catch (e: Exception) { e.printStackTrace() }
                     list
                 }
+                
                 if (iaPlaylist.isNotEmpty()) {
-                    Toast.makeText(context, "Hidden Collection Found: ${iaPlaylist.size} tracks added!", Toast.LENGTH_LONG).show()
-                    withContext(Dispatchers.IO) { iaPlaylist.forEach { db.saveSongMemory(SongEntity(it.id, it.title, it.artist, it.title, it.artist, it.customArtUrl, null, memoryMap[it.id]?.isFavorite ?: false, System.currentTimeMillis())) } }
+                    withContext(Dispatchers.Main) { Toast.makeText(context, "Hidden Collection Found: ${iaPlaylist.size} tracks!", Toast.LENGTH_LONG).show() }
+                    
+                    // SAVE ONLY THE PARENT ALBUM TO HISTORY TO PREVENT POLLUTION AND CRASHES
+                    val parentId = -(kotlin.math.abs((webSongData.title + webSongData.artist).hashCode().toLong())).let { if(it==0L) -1L else it }
+                    val packedArt = "${webSongData.artUrl}|||${webSongData.id}"
+                    withContext(Dispatchers.IO) { 
+                        db.saveSongMemory(SongEntity(parentId, webSongData.title, webSongData.artist, webSongData.title, webSongData.artist, packedArt, null, memoryMap[parentId]?.isFavorite ?: false, System.currentTimeMillis())) 
+                    }
+                    
                     fetchedInternetData = webSongData; playSongList(iaPlaylist.first(), iaPlaylist); showFullScreenPlayer = true
-                } else Toast.makeText(context, "No audio found.", Toast.LENGTH_SHORT).show()
+                } else {
+                    withContext(Dispatchers.Main) { Toast.makeText(context, "No audio found.", Toast.LENGTH_SHORT).show() }
+                }
                 return@launch
             }
 
@@ -193,6 +203,7 @@ fun MusicPlayerUI() {
                 val dummyId = -(kotlin.math.abs((webSongData.title + webSongData.artist).hashCode().toLong())).let { if(it==0L) -1L else it }
                 val packedArt = "${webSongData.artUrl}|||${webSongData.id}"
                 val dummySong = LocalSong(dummyId, webSongData.title, webSongData.artist, -1L, streamUrl, packedArt)
+                
                 withContext(Dispatchers.IO) { db.saveSongMemory(SongEntity(dummyId, webSongData.title, webSongData.artist, webSongData.title, webSongData.artist, packedArt, null, memoryMap[dummyId]?.isFavorite ?: false, System.currentTimeMillis())) }
                 fetchedInternetData = webSongData; playQueue = listOf(dummySong)
                 exoPlayer.stop(); exoPlayer.clearMediaItems()
@@ -211,8 +222,24 @@ fun MusicPlayerUI() {
             override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
             override fun onPlaybackStateChanged(state: Int) { 
                 playbackState = state 
-                if (state == Player.STATE_ENDED && autoPlayContext.isNotEmpty() && autoPlayIndex in 0 until autoPlayContext.size - 1) { 
-                    coroutineScope.launch { delay(1000); autoPlayIndex++; playWebSong(autoPlayContext[autoPlayIndex]) } 
+                if (state == Player.STATE_ENDED) {
+                    if (autoPlayContext.isNotEmpty() && autoPlayIndex in 0 until autoPlayContext.size - 1) { 
+                        coroutineScope.launch { delay(1000); autoPlayIndex++; playWebSong(autoPlayContext[autoPlayIndex]) } 
+                    } else if (currentSong != null) {
+                        // RECOMMENDATION ENGINE TRIGGER
+                        coroutineScope.launch {
+                            val cSong = currentSong
+                            if (cSong != null) {
+                                withContext(Dispatchers.Main) { Toast.makeText(context, "Finding recommendations...", Toast.LENGTH_SHORT).show() }
+                                val recs = fetchLiveSearchResults("Latest ${cSong.artist} hit songs", "All")
+                                if (recs.isNotEmpty()) {
+                                    autoPlayContext = recs
+                                    autoPlayIndex = 0
+                                    playWebSong(recs[0])
+                                }
+                            }
+                        }
+                    }
                 }
             }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) { 
@@ -230,7 +257,7 @@ fun MusicPlayerUI() {
         val mem = db.getSongMemory(song.id)
         val dTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title
         val dArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist
-        fetchedInternetData = InternetSongData(song.customArtUrl?.substringAfter("|||", "") ?: "", dTitle, dArtist, mem?.fetchedArtUrl?.substringBefore("|||") ?: "", mem?.fetchedLyrics)
+        fetchedInternetData = InternetSongData("", dTitle, dArtist, mem?.fetchedArtUrl ?: "", mem?.fetchedLyrics)
         db.saveSongMemory(SongEntity(song.id, mem?.customTitle, mem?.customArtist, mem?.fetchedTitle ?: dTitle, mem?.fetchedArtist ?: dArtist, mem?.fetchedArtUrl, mem?.fetchedLyrics, mem?.isFavorite ?: false, System.currentTimeMillis()))
         if (mem?.fetchedArtUrl == null) { 
             val res = fetchMultiSourceMetadata(dTitle, dArtist)
@@ -509,7 +536,13 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
         val saavnList = mutableListOf<InternetSongData>()
         if (!isPlaylistSearch) {
             try {
-                val finalQuery = if (language != "All" && !query.contains(language, true)) "$query $language" else query
+                val qDate = SimpleDateFormat("yyyy", Locale.getDefault()).format(Date())
+                val finalQuery = if (query.isBlank()) {
+                    if (language == "All") "Top Hits $qDate" else "Latest $language Hit Songs"
+                } else if (language != "All" && !query.contains(language, true)) {
+                    "$query $language"
+                } else query
+                
                 val q = URLEncoder.encode(finalQuery, "UTF-8")
                 val res = fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&query=$q")
                 if (res != null) {
@@ -530,8 +563,7 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
         val iaList = mutableListOf<InternetSongData>()
         if (isPlaylistSearch) {
             try {
-                val qBase = if (query.isBlank()) "subject:\"anime\" OR subject:\"soundtrack\"" else "($query)"
-                val exactQuery = "$qBase AND mediatype:audio AND -subject:\"news\" AND -subject:\"podcast\" AND -subject:\"radio\" AND -creator:\"voa\" AND -collection:\"voa\" AND -title:\"voa\" AND -title:\"news\""
+                val exactQuery = if (query.isBlank()) "mediatype:audio AND subject:\"anime\" AND (title:\"OST\" OR title:\"Collection\") AND -subject:\"podcast\" AND -subject:\"news\" AND -creator:\"voa\"" else "($query) AND mediatype:audio AND (ost OR archive OR collection OR list OR complete OR soundtrack OR subject:\"anime\" OR subject:\"music\") AND -subject:\"news\" AND -subject:\"podcast\" AND -creator:\"voa\""
                 val res = fetchHttp("https://archive.org/advancedsearch.php?q=${URLEncoder.encode(exactQuery, "UTF-8")}&fl[]=identifier,title,creator&rows=15&output=json")
                 if (res != null) {
                     val docs = JSONObject(res).optJSONObject("response")?.optJSONArray("docs")
