@@ -109,13 +109,11 @@ fun MusicPlayerUI() {
 
     LaunchedEffect(searchQuery, selectedLanguage, isSearchActive) {
         if (!isSearchActive) return@LaunchedEffect
-        
         val q = if (searchQuery.isBlank()) {
             if (selectedLanguage == "All") "Top Hits" else "$selectedLanguage Hits"
         } else {
             if (selectedLanguage == "All" || selectedLanguage == "Playlists") searchQuery else "$searchQuery $selectedLanguage"
         }
-        
         delay(400); isLiveSearching = true; liveSearchResults = fetchLiveSearchResults(q, selectedLanguage); isLiveSearching = false
     }
 
@@ -142,7 +140,6 @@ fun MusicPlayerUI() {
     fun playSongList(song: LocalSong, sourceList: List<LocalSong>) {
         autoPlayContext = emptyList(); autoPlayIndex = -1 
         val idx = sourceList.indexOf(song); playQueue = sourceList
-        
         exoPlayer.stop(); exoPlayer.clearMediaItems()
         exoPlayer.setMediaItems(sourceList.map { s -> MediaItem.Builder().setUri(s.webStreamUrl ?: ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, s.id).toString()).setMediaId(s.id.toString()).build() })
         if (idx >= 0) exoPlayer.seekTo(idx, C.TIME_UNSET)
@@ -189,13 +186,11 @@ fun MusicPlayerUI() {
                 
                 if (iaPlaylist.isNotEmpty()) {
                     withContext(Dispatchers.Main) { Toast.makeText(context, "Hidden Collection Found: ${iaPlaylist.size} tracks!", Toast.LENGTH_LONG).show() }
-                    
                     val parentId = -(kotlin.math.abs((webSongData.title + webSongData.artist).hashCode().toLong())).let { if(it==0L) -1L else it }
                     val packedArt = "${webSongData.artUrl}|||${webSongData.id}"
                     withContext(Dispatchers.IO) { 
                         db.saveSongMemory(SongEntity(parentId, webSongData.title, webSongData.artist, webSongData.title, webSongData.artist, packedArt, null, memoryMap[parentId]?.isFavorite ?: false, System.currentTimeMillis())) 
                     }
-                    
                     fetchedInternetData = webSongData; playSongList(iaPlaylist.first(), iaPlaylist); showFullScreenPlayer = true
                 } else {
                     withContext(Dispatchers.Main) { Toast.makeText(context, "No audio found.", Toast.LENGTH_SHORT).show() }
@@ -542,14 +537,18 @@ suspend fun getDynamicLanguages(): List<String> = withContext(Dispatchers.IO) {
         
         var dummyIp = ""
         val myIpRes = fetchHttp("https://api4.ipify.org")
-        if (myIpRes != null && myIpRes.contains(".")) dummyIp = myIpRes.substringBeforeLast(".") + ".0" 
+        if (myIpRes != null && myIpRes.contains(".")) {
+            dummyIp = myIpRes.substringBeforeLast(".") + ".12" 
+        }
         
         val geoUrl = if (dummyIp.isNotBlank()) "https://ipwho.is/$dummyIp" else "https://ipwho.is/"
         val res = fetchHttp(geoUrl)
+        
         if (res != null) {
             val json = JSONObject(res)
             val country = json.optString("country", "")
             val region = json.optString("region", "")
+            
             if (country.equals("India", true)) {
                 if (region.contains("Tamil", true)) langs.add("Tamil")
                 else if (region.contains("Karnataka", true)) langs.add("Kannada")
@@ -578,7 +577,8 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
         val saavnList = mutableListOf<InternetSongData>()
         if (!isPlaylistSearch) {
             try {
-                val q = URLEncoder.encode(query, "UTF-8")
+                val finalQuery = if (query.isBlank()) "$language Hits" else if (language != "All" && !query.contains(language, true)) "$query $language" else query
+                val q = URLEncoder.encode(finalQuery, "UTF-8")
                 val res = fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&query=$q")
                 if (res != null) {
                     val arr = JSONObject(res).optJSONObject("songs")?.optJSONArray("data")
@@ -598,14 +598,20 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
         val iaList = mutableListOf<InternetSongData>()
         if (isPlaylistSearch) {
             try {
-                val exactQuery = if (query.isBlank()) "mediatype:audio AND subject:\"anime\" AND (title:\"OST\" OR title:\"Collection\") AND -subject:\"podcast\" AND -subject:\"news\" AND -creator:\"voa\"" else "($query) AND mediatype:audio AND (ost OR archive OR collection OR list OR complete OR soundtrack OR subject:\"anime\" OR subject:\"music\") AND -subject:\"news\" AND -subject:\"podcast\" AND -creator:\"voa\""
+                val qBase = if (query.isBlank()) "subject:\"anime\" OR subject:\"soundtrack\"" else "($query)"
+                val exactQuery = "$qBase AND mediatype:audio AND NOT subject:\"news\" AND NOT subject:\"podcast\" AND NOT subject:\"radio\" AND NOT creator:\"voa\" AND NOT collection:\"voa\" AND NOT title:\"voa\" AND NOT title:\"news\" AND NOT creator:\"Voice of America\""
                 val res = fetchHttp("https://archive.org/advancedsearch.php?q=${URLEncoder.encode(exactQuery, "UTF-8")}&fl[]=identifier,title,creator&rows=15&output=json")
                 if (res != null) {
                     val docs = JSONObject(res).optJSONObject("response")?.optJSONArray("docs")
                     if (docs != null) {
                         for (i in 0 until docs.length()) {
                             val t = docs.getJSONObject(i); val id = t.optString("identifier", "")
-                            if (id.isNotBlank()) iaList.add(InternetSongData("ia:$id", t.optString("title", "Unknown Album"), "[Full Album] " + t.optString("creator", "Archive OST"), "https://archive.org/services/img/$id"))
+                            val title = t.optString("title", "Unknown Album")
+                            val creator = t.optString("creator", "Archive OST")
+                            
+                            if (id.isNotBlank() && !title.contains("VOA", true) && !creator.contains("Voice of America", true)) {
+                                iaList.add(InternetSongData("ia:$id", title, "[Full Album] $creator", "https://archive.org/services/img/$id"))
+                            }
                         }
                     }
                 }
@@ -618,7 +624,8 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
         val pipedList = mutableListOf<InternetSongData>()
         if (!isPlaylistSearch && query.isNotBlank()) {
             try {
-                val res = fetchHttp("https://pipedapi.kavin.rocks/search?q=${URLEncoder.encode(query, "UTF-8")}&filter=music_songs")
+                val finalQuery = if (language != "All" && !query.contains(language, true)) "$query $language" else query
+                val res = fetchHttp("https://pipedapi.kavin.rocks/search?q=${URLEncoder.encode(finalQuery, "UTF-8")}&filter=music_songs")
                 if (res != null) {
                     val items = JSONObject(res).optJSONArray("items")
                     if (items != null) {
