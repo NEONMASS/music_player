@@ -103,9 +103,6 @@ fun MusicPlayerUI() {
 
     val languages = listOf("All", "Tamil", "English", "Hindi", "Malayalam", "Telugu", "Kannada", "Marathi", "Bengali", "Punjabi", "Gujarati")
     var selectedLanguage by remember { mutableStateOf("Tamil") } 
-    var showLangMenu by remember { mutableStateOf(false) }
-    
-    // NEW: Explicit toggle for Playlists vs Tracks
     var isPlaylistMode by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -157,8 +154,6 @@ fun MusicPlayerUI() {
     fun playWebSong(webSongData: InternetSongData) {
         coroutineScope.launch {
             if (webSongData.id.startsWith("ia:")) {
-                withContext(Dispatchers.Main) { Toast.makeText(context, "Deep Scanning Archive... Extracting Files", Toast.LENGTH_SHORT).show() }
-                
                 val iaPlaylist = withContext(Dispatchers.IO) {
                     val id = webSongData.id.removePrefix("ia:")
                     val list = mutableListOf<LocalSong>()
@@ -188,29 +183,25 @@ fun MusicPlayerUI() {
                                 }
                             }
                         }
-                    } catch (e: Exception) { e.printStackTrace() }
+                    } catch (e: Exception) {}
                     list
                 }
                 
                 if (iaPlaylist.isNotEmpty()) {
-                    withContext(Dispatchers.Main) { Toast.makeText(context, "Hidden Collection Found: ${iaPlaylist.size} tracks!", Toast.LENGTH_LONG).show() }
                     val parentId = -(kotlin.math.abs((webSongData.title + webSongData.artist).hashCode().toLong())).let { if(it==0L) -1L else it }
                     val packedArt = "${webSongData.artUrl}|||${webSongData.id}"
                     withContext(Dispatchers.IO) { 
                         db.saveSongMemory(SongEntity(parentId, webSongData.title, webSongData.artist, webSongData.title, webSongData.artist, packedArt, null, memoryMap[parentId]?.isFavorite ?: false, System.currentTimeMillis())) 
                     }
                     fetchedInternetData = webSongData; playSongList(iaPlaylist.first(), iaPlaylist); showFullScreenPlayer = true
-                } else {
-                    withContext(Dispatchers.Main) { Toast.makeText(context, "No audio found.", Toast.LENGTH_SHORT).show() }
                 }
                 return@launch
             }
 
             val cleanTitle = webSongData.title.lowercase().replace(Regex("[^a-z0-9]"), "")
             val localMatch = if (cleanTitle.isNotBlank()) localSongs.find { it.title.lowercase().replace(Regex("[^a-z0-9]"), "").let { n -> n == cleanTitle || n.contains(cleanTitle) || cleanTitle.contains(n) } } else null
-            if (localMatch != null) { Toast.makeText(context, "Playing offline file.", Toast.LENGTH_SHORT).show(); playSongList(localMatch, localSongs); showFullScreenPlayer = true; return@launch }
+            if (localMatch != null) { playSongList(localMatch, localSongs); showFullScreenPlayer = true; return@launch }
             
-            Toast.makeText(context, "Extracting audio...", Toast.LENGTH_SHORT).show()
             val streamUrl = fetchAudioStreamUrl(webSongData.title, webSongData.artist, webSongData.id)
             if (streamUrl != null) {
                 val dummyId = -(kotlin.math.abs((webSongData.title + webSongData.artist).hashCode().toLong())).let { if(it==0L) -1L else it }
@@ -222,11 +213,30 @@ fun MusicPlayerUI() {
                 exoPlayer.stop(); exoPlayer.clearMediaItems()
                 exoPlayer.setMediaItem(MediaItem.Builder().setUri(streamUrl).setMediaId(dummyId.toString()).build()); exoPlayer.prepare(); exoPlayer.play(); showFullScreenPlayer = true
             } else { 
-                Toast.makeText(context, "Stream unplayable. Skipping...", Toast.LENGTH_SHORT).show() 
                 if (autoPlayContext.isNotEmpty() && autoPlayIndex in 0 until autoPlayContext.size - 1) { 
                     coroutineScope.launch { delay(1000); autoPlayIndex++; playWebSong(autoPlayContext[autoPlayIndex]) } 
                 }
             }
+        }
+    }
+
+    val handleNext = {
+        if (exoPlayer.mediaItemCount > 1) {
+            exoPlayer.seekToNextMediaItem()
+        } else if (autoPlayContext.isNotEmpty() && autoPlayIndex >= 0 && autoPlayIndex < autoPlayContext.size - 1) {
+            autoPlayIndex++
+            playWebSong(autoPlayContext[autoPlayIndex])
+        }
+    }
+
+    val handlePrev = {
+        if (exoPlayer.mediaItemCount > 1) {
+            exoPlayer.seekToPreviousMediaItem()
+        } else if (autoPlayContext.isNotEmpty() && autoPlayIndex > 0) {
+            autoPlayIndex--
+            playWebSong(autoPlayContext[autoPlayIndex])
+        } else {
+            exoPlayer.seekTo(0L)
         }
     }
 
@@ -242,9 +252,8 @@ fun MusicPlayerUI() {
                         coroutineScope.launch {
                             val cSong = currentSong
                             if (cSong != null) {
-                                withContext(Dispatchers.Main) { Toast.makeText(context, "Finding recommendations...", Toast.LENGTH_SHORT).show() }
                                 val recQuery = "${cSong.artist} Hits"
-                                val recs = fetchLiveSearchResults(recQuery, selectedLanguage, false)
+                                val recs = fetchLiveSearchResults(recQuery, "All", false)
                                 if (recs.isNotEmpty()) { autoPlayContext = recs; autoPlayIndex = 0; playWebSong(recs[0]) }
                             }
                         }
@@ -255,7 +264,6 @@ fun MusicPlayerUI() {
                 if (mediaItem == null || exoPlayer.mediaItemCount == 0) { currentSong = null; isPlaying = false; showFullScreenPlayer = false } 
                 else if (exoPlayer.currentMediaItemIndex in playQueue.indices) currentSong = playQueue[exoPlayer.currentMediaItemIndex] 
             }
-            override fun onPlayerError(error: PlaybackException) { Toast.makeText(context, "Error: ${error.message}", Toast.LENGTH_LONG).show() }
         }
         exoPlayer.addListener(listener); onDispose { exoPlayer.removeListener(listener) }
     }
@@ -287,25 +295,12 @@ fun MusicPlayerUI() {
                 TopAppBar(
                     title = { 
                         if (isSearchActive) {
-                            TextField(value = searchQuery, onValueChange = { searchQuery = it }, placeholder = { Text("Search ${if (selectedLanguage == "All") "" else selectedLanguage}...") }, singleLine = true, colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent)) 
+                            TextField(value = searchQuery, onValueChange = { searchQuery = it }, placeholder = { Text("Search ${if (selectedLanguage == "All") "Global" else selectedLanguage}...") }, singleLine = true, colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent)) 
                         } else { 
                             Text(when(currentTab) { 0 -> "Dashboard"; 1 -> "Discover"; 2 -> "My Library"; else -> "All Songs" }, fontWeight = FontWeight.Bold) 
                         } 
                     }, 
                     actions = { 
-                        if (isSearchActive) {
-                            Box {
-                                IconButton(onClick = { showLangMenu = true }) { Icon(Icons.Default.FilterList, contentDescription = "Filter", tint = MaterialTheme.colorScheme.primary) }
-                                DropdownMenu(expanded = showLangMenu, onDismissRequest = { showLangMenu = false }) {
-                                    languages.forEach { lang ->
-                                        DropdownMenuItem(
-                                            text = { Text(lang, fontWeight = if (selectedLanguage == lang) FontWeight.Bold else FontWeight.Normal, color = if (selectedLanguage == lang) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
-                                            onClick = { selectedLanguage = lang; showLangMenu = false }
-                                        )
-                                    }
-                                }
-                            }
-                        }
                         IconButton(onClick = { isSearchActive = !isSearchActive; if (!isSearchActive) searchQuery = "" }) { 
                             Icon(if (isSearchActive) Icons.Default.Close else Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary) 
                         } 
@@ -315,7 +310,7 @@ fun MusicPlayerUI() {
             },
             bottomBar = { 
                 Column {
-                    if (currentSong != null) PlayerControlsBar(currentSong = currentSong!!, internetData = fetchedInternetData, isPlaying = isPlaying, currentPosition = currentPosition, totalDuration = totalDuration, onPlayPause = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }, onNext = { exoPlayer.seekToNextMediaItem() }, onPrev = { exoPlayer.seekToPreviousMediaItem() }, onBarClick = { showFullScreenPlayer = true })
+                    if (currentSong != null) PlayerControlsBar(currentSong = currentSong!!, internetData = fetchedInternetData, isPlaying = isPlaying, currentPosition = currentPosition, totalDuration = totalDuration, onPlayPause = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }, onNext = handleNext, onPrev = handlePrev, onBarClick = { showFullScreenPlayer = true })
                     NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 8.dp) {
                         NavigationBarItem(icon = { Icon(Icons.Default.Home, null) }, label = { Text("Home", fontSize = 10.sp) }, selected = currentTab == 0 && !isSearchActive, onClick = { currentTab = 0; isSearchActive = false; viewingLikedSongs = false; viewingPlaylistId = null })
                         NavigationBarItem(icon = { Icon(Icons.Default.Search, null) }, label = { Text("Search", fontSize = 10.sp) }, selected = isSearchActive, onClick = { isSearchActive = true; currentTab = 1 })
@@ -329,10 +324,16 @@ fun MusicPlayerUI() {
                 if (!permissionGranted) { Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Storage permission is required.", color = MaterialTheme.colorScheme.primary) }
                 } else if (isSearchActive) {
                     
-                    // NEW: Hardcoded Filter Chips for Search Mode
-                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        FilterChip(selected = !isPlaylistMode, onClick = { isPlaylistMode = false }, label = { Text("Tracks") }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)))
-                        FilterChip(selected = isPlaylistMode, onClick = { isPlaylistMode = true }, label = { Text("Albums & Playlists") }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)))
+                    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(selected = !isPlaylistMode, onClick = { isPlaylistMode = false }, label = { Text("Tracks") }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)))
+                            FilterChip(selected = isPlaylistMode, onClick = { isPlaylistMode = true }, label = { Text("Albums & Playlists") }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)))
+                        }
+                        LazyRow(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(languages) { lang -> 
+                                FilterChip(selected = selectedLanguage == lang, onClick = { selectedLanguage = lang }, label = { Text(lang) }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))) 
+                            }
+                        }
                     }
 
                     if (isLiveSearching) Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -424,7 +425,7 @@ fun MusicPlayerUI() {
                         }
                     } 
                 }, 
-                onClose = { showFullScreenPlayer = false }, onPlayPause = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }, onNext = { exoPlayer.seekToNextMediaItem() }, onPrev = { exoPlayer.seekToPreviousMediaItem() }, onSeek = { percentage -> if(!isLive) { exoPlayer.seekTo((percentage * totalDuration).toLong()); currentPosition = (percentage * totalDuration).toLong() } }, onToggleFavorite = { toggleFavorite() }, isLive = isLive, progress = progress)
+                onClose = { showFullScreenPlayer = false }, onPlayPause = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }, onNext = handleNext, onPrev = handlePrev, onSeek = { percentage -> if(!isLive) { exoPlayer.seekTo((percentage * totalDuration).toLong()); currentPosition = (percentage * totalDuration).toLong() } }, onToggleFavorite = { toggleFavorite() }, isLive = isLive, progress = progress)
             }
         }
 
@@ -435,19 +436,16 @@ fun MusicPlayerUI() {
                     TextButton(onClick = { 
                         if (s.id < 0) {
                             coroutineScope.launch {
-                                Toast.makeText(context, "Fetching stream...", Toast.LENGTH_SHORT).show()
                                 val streamUrl = fetchAudioStreamUrl(s.title, s.artist, s.customArtUrl?.substringAfter("|||", "") ?: "")
                                 if (streamUrl != null) {
                                     playQueue = playQueue + s.copy(webStreamUrl = streamUrl)
                                     exoPlayer.addMediaItem(MediaItem.Builder().setUri(streamUrl).setMediaId(s.id.toString()).build())
                                     db.saveSongMemory(SongEntity(s.id, s.title, s.artist, s.title, s.artist, s.customArtUrl, null, false, System.currentTimeMillis()))
-                                    Toast.makeText(context, "Added to Queue", Toast.LENGTH_SHORT).show()
-                                } else Toast.makeText(context, "Failed", Toast.LENGTH_SHORT).show()
+                                }
                             }
                         } else {
                             playQueue = playQueue + s
                             exoPlayer.addMediaItem(MediaItem.Builder().setUri(ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, s.id)).setMediaId(s.id.toString()).build())
-                            Toast.makeText(context, "Added to Queue", Toast.LENGTH_SHORT).show()
                         }
                         selectedSongForAction = null 
                     }, modifier = Modifier.fillMaxWidth()) { Text("Add to Queue") }
@@ -563,25 +561,31 @@ fun fetchLocalMusic(context: Context): List<LocalSong> {
     return songs
 }
 
-private fun fetchHttp(urlStr: String): String? {
+// THE SPLIT-ROUTING ENGINE: Routes metadata through Tor SOCKS5, auto-falls back to direct network.
+private fun fetchHttp(urlStr: String, useTor: Boolean = true): String? {
     return try {
-        val conn = URL(urlStr).openConnection() as HttpURLConnection
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-        conn.connectTimeout = 4000; conn.readTimeout = 4000
+        val proxy = if (useTor) java.net.Proxy(java.net.Proxy.Type.SOCKS, java.net.InetSocketAddress("127.0.0.1", 9050)) else java.net.Proxy.NO_PROXY
+        val conn = URL(urlStr).openConnection(proxy) as HttpURLConnection
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; rv:115.0) Gecko/20100101 Firefox/115.0")
+        conn.connectTimeout = 8000
+        conn.readTimeout = 8000
         if (conn.responseCode == 200) conn.inputStream.bufferedReader().readText() else null
-    } catch (e: Exception) { null }
+    } catch (e: Exception) {
+        if (useTor) fetchHttp(urlStr, false) else null 
+    }
 }
 
+// SUBNET BYPASS: Uses direct connection to fetch authentic location, then sets language.
 suspend fun getPrivacyMaskedLanguage(): String = withContext(Dispatchers.IO) {
     try {
         var dummyIp = ""
-        val myIpRes = fetchHttp("https://api4.ipify.org")
+        val myIpRes = fetchHttp("https://api4.ipify.org", useTor = false) 
         if (myIpRes != null && myIpRes.contains(".")) {
             dummyIp = myIpRes.substringBeforeLast(".") + ".12" 
         }
         
         val geoUrl = if (dummyIp.isNotBlank()) "https://ipwho.is/$dummyIp" else "https://ipwho.is/"
-        val res = fetchHttp(geoUrl)
+        val res = fetchHttp(geoUrl, useTor = false)
         
         if (res != null) {
             val json = JSONObject(res)
@@ -603,8 +607,7 @@ suspend fun getPrivacyMaskedLanguage(): String = withContext(Dispatchers.IO) {
             }
         }
     } catch (e: Exception) {}
-    
-    return@withContext "Tamil" 
+    return@withContext "Global" 
 }
 
 suspend fun fetchLiveSearchResults(query: String, language: String, isPlaylistSearch: Boolean): List<InternetSongData> = coroutineScope {
@@ -615,13 +618,29 @@ suspend fun fetchLiveSearchResults(query: String, language: String, isPlaylistSe
         if (!isPlaylistSearch) {
             try {
                 val qEncoded = URLEncoder.encode(query, "UTF-8")
-                val res = fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&query=$qEncoded")
-                if (res != null) {
-                    val arr = JSONObject(res).optJSONObject("songs")?.optJSONArray("data")
-                    if (arr != null) {
-                        for (i in 0 until arr.length()) {
-                            val t = arr.getJSONObject(i); val info = t.optJSONObject("more_info")
-                            saavnList.add(InternetSongData(t.optString("id", ""), t.optString("title", "").replace("&quot;", "\"").replace("&amp;", "&"), info?.optString("singers", "") ?: info?.optString("primary_artists", "") ?: "", t.optString("image", "").replace("50x50.jpg", "500x500.jpg")))
+                val apis = listOf("https://saavn.dev/api/search/songs?query=", "https://saavn.sumit.co/api/search/songs?query=")
+                for (api in apis) {
+                    val res = fetchHttp("$api$qEncoded")
+                    if (res != null) {
+                        val arr = JSONObject(res).optJSONObject("data")?.optJSONArray("results")
+                        if (arr != null && arr.length() > 0) {
+                            for (i in 0 until arr.length()) {
+                                val t = arr.getJSONObject(i)
+                                saavnList.add(InternetSongData(t.optString("id", ""), t.optString("title", "").replace("&quot;", "\"").replace("&amp;", "&"), t.optJSONObject("primaryArtists")?.optString("name", "") ?: "", t.optJSONArray("image")?.optJSONObject(2)?.optString("link", "") ?: t.optString("image", "")))
+                            }
+                            break 
+                        }
+                    }
+                }
+                if (saavnList.isEmpty()) {
+                    val legacyRes = fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&query=$qEncoded")
+                    if (legacyRes != null) {
+                        val arr = JSONObject(legacyRes).optJSONObject("songs")?.optJSONArray("data")
+                        if (arr != null) {
+                            for (i in 0 until arr.length()) {
+                                val t = arr.getJSONObject(i); val info = t.optJSONObject("more_info")
+                                saavnList.add(InternetSongData(t.optString("id", ""), t.optString("title", "").replace("&quot;", "\"").replace("&amp;", "&"), info?.optString("singers", "") ?: info?.optString("primary_artists", "") ?: "", t.optString("image", "").replace("50x50.jpg", "500x500.jpg")))
+                            }
                         }
                     }
                 }
@@ -660,17 +679,22 @@ suspend fun fetchLiveSearchResults(query: String, language: String, isPlaylistSe
         val pipedList = mutableListOf<InternetSongData>()
         if (!isPlaylistSearch && query.isNotBlank()) {
             try {
-                val res = fetchHttp("https://pipedapi.kavin.rocks/search?q=${URLEncoder.encode(query, "UTF-8")}&filter=music_songs")
-                if (res != null) {
-                    val items = JSONObject(res).optJSONArray("items")
-                    if (items != null) {
-                        for (i in 0 until minOf(items.length(), 10)) {
-                            val t = items.getJSONObject(i)
-                            if (t.optString("type") == "stream") {
-                                val url = t.optString("url", "")
-                                val vid = url.replace("/watch?v=", "").substringBefore("&")
-                                if (vid.isNotBlank()) pipedList.add(InternetSongData("yt:$vid", t.optString("title", ""), t.optString("uploaderName", ""), t.optString("thumbnail", "")))
+                val qEnc = URLEncoder.encode(query, "UTF-8")
+                val instances = listOf("pipedapi.kavin.rocks", "pipedapi.tokhmi.xyz", "piped.projectsegfau.lt", "pipedapi.smnz.de")
+                for (instance in instances) {
+                    val res = fetchHttp("https://$instance/search?q=$qEnc&filter=music_songs")
+                    if (res != null) {
+                        val items = JSONObject(res).optJSONArray("items")
+                        if (items != null) {
+                            for (i in 0 until minOf(items.length(), 10)) {
+                                val t = items.getJSONObject(i)
+                                if (t.optString("type") == "stream") {
+                                    val url = t.optString("url", "")
+                                    val vid = url.replace("/watch?v=", "").substringBefore("&")
+                                    if (vid.isNotBlank()) pipedList.add(InternetSongData("yt:$vid", t.optString("title", ""), t.optString("uploaderName", ""), t.optString("thumbnail", "")))
+                                }
                             }
+                            if (pipedList.isNotEmpty()) break 
                         }
                     }
                 }
