@@ -36,6 +36,8 @@ import coil.request.ImageRequest
 import kotlinx.coroutines.*
 import org.json.*
 import java.net.*
+import java.text.SimpleDateFormat
+import java.util.*
 
 private val PastelLavenderLight = Color(0xFFB39DDB)
 private val PastelBackgroundLight = Color(0xFFFDFBFD)
@@ -55,7 +57,7 @@ fun BlueWhiteFallback(modifier: Modifier = Modifier, iconSize: Dp = 48.dp) {
     Box(modifier = modifier.background(Brush.linearGradient(listOf(Color(0xFF1976D2), Color(0xFFBBDEFB)))), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, contentDescription = "Music", tint = Color.White.copy(alpha = 0.9f), modifier = Modifier.size(iconSize)) }
 }
 
-data class LocalSong(val id: Long, val title: String, val artist: String, val albumId: Long, val webStreamUrl: String? = null, val customArtUrl: String? = null) { val albumArtUri: Uri get() = if(customArtUrl != null) Uri.parse(customArtUrl) else Uri.parse("content://media/external/audio/albumart/$albumId") }
+data class LocalSong(val id: Long, val title: String, val artist: String, val albumId: Long, val webStreamUrl: String? = null, val customArtUrl: String? = null) { val albumArtUri: Uri get() = if(customArtUrl != null) Uri.parse(customArtUrl.substringBefore("|||")) else Uri.parse("content://media/external/audio/albumart/$albumId") }
 data class InternetSongData(val id: String = "", val title: String, val artist: String, val artUrl: String, val lyrics: String? = null)
 
 class MainActivity : ComponentActivity() {
@@ -105,9 +107,9 @@ fun MusicPlayerUI() {
 
     LaunchedEffect(searchQuery, selectedLanguage, isSearchActive) {
         if (!isSearchActive) return@LaunchedEffect
-        delay(400); isLiveSearching = true
-        liveSearchResults = fetchLiveSearchResults(searchQuery, selectedLanguage)
-        isLiveSearching = false
+        val currentDate = SimpleDateFormat("MMMM yyyy", Locale.getDefault()).format(Date())
+        val q = if (searchQuery.isBlank()) if (selectedLanguage == "All") "Top Trending $currentDate" else "$selectedLanguage Trending $currentDate" else if (selectedLanguage == "All" || selectedLanguage == "Playlists") searchQuery else "$searchQuery $selectedLanguage"
+        delay(400); isLiveSearching = true; liveSearchResults = fetchLiveSearchResults(q, selectedLanguage); isLiveSearching = false
     }
 
     var currentSong by remember { mutableStateOf<LocalSong?>(null) }; var fetchedInternetData by remember { mutableStateOf<InternetSongData?>(null) } 
@@ -133,6 +135,7 @@ fun MusicPlayerUI() {
     fun playSongList(song: LocalSong, sourceList: List<LocalSong>) {
         autoPlayContext = emptyList(); autoPlayIndex = -1 
         val idx = sourceList.indexOf(song); playQueue = sourceList
+        
         exoPlayer.stop(); exoPlayer.clearMediaItems()
         exoPlayer.setMediaItems(sourceList.map { s -> MediaItem.Builder().setUri(s.webStreamUrl ?: ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, s.id).toString()).setMediaId(s.id.toString()).build() })
         if (idx >= 0) exoPlayer.seekTo(idx, C.TIME_UNSET)
@@ -165,7 +168,8 @@ fun MusicPlayerUI() {
                                 val trackTitle = f.optString("title").takeIf { it.isNotBlank() } ?: f.optString("name").substringBeforeLast(".")
                                 val trackArtist = f.optString("creator").takeIf { it.isNotBlank() } ?: webSongData.artist.replace("[Full Album] ", "").replace("[Playlist] ", "")
                                 val dummyId = -(kotlin.math.abs((trackTitle + trackArtist).hashCode().toLong())).let { if(it==0L) -1L else it }
-                                list.add(LocalSong(dummyId, trackTitle, trackArtist, -1L, "https://archive.org/download/$id/${Uri.encode(f.optString("name"))}", webSongData.artUrl))
+                                val packedArt = "${webSongData.artUrl}|||ia:$id"
+                                list.add(LocalSong(dummyId, trackTitle, trackArtist, -1L, "https://archive.org/download/$id/${Uri.encode(f.optString("name"))}", packedArt))
                             }
                         }
                     } catch (e: Exception) { e.printStackTrace() }
@@ -187,8 +191,9 @@ fun MusicPlayerUI() {
             val streamUrl = fetchAudioStreamUrl(webSongData.title, webSongData.artist, webSongData.id)
             if (streamUrl != null) {
                 val dummyId = -(kotlin.math.abs((webSongData.title + webSongData.artist).hashCode().toLong())).let { if(it==0L) -1L else it }
-                val dummySong = LocalSong(dummyId, webSongData.title, webSongData.artist, -1L, streamUrl, webSongData.artUrl)
-                withContext(Dispatchers.IO) { db.saveSongMemory(SongEntity(dummyId, webSongData.title, webSongData.artist, webSongData.title, webSongData.artist, webSongData.artUrl, null, memoryMap[dummyId]?.isFavorite ?: false, System.currentTimeMillis())) }
+                val packedArt = "${webSongData.artUrl}|||${webSongData.id}"
+                val dummySong = LocalSong(dummyId, webSongData.title, webSongData.artist, -1L, streamUrl, packedArt)
+                withContext(Dispatchers.IO) { db.saveSongMemory(SongEntity(dummyId, webSongData.title, webSongData.artist, webSongData.title, webSongData.artist, packedArt, null, memoryMap[dummyId]?.isFavorite ?: false, System.currentTimeMillis())) }
                 fetchedInternetData = webSongData; playQueue = listOf(dummySong)
                 exoPlayer.stop(); exoPlayer.clearMediaItems()
                 exoPlayer.setMediaItem(MediaItem.Builder().setUri(streamUrl).setMediaId(dummyId.toString()).build()); exoPlayer.prepare(); exoPlayer.play(); showFullScreenPlayer = true
@@ -225,7 +230,7 @@ fun MusicPlayerUI() {
         val mem = db.getSongMemory(song.id)
         val dTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title
         val dArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist
-        fetchedInternetData = InternetSongData("", dTitle, dArtist, mem?.fetchedArtUrl ?: "", mem?.fetchedLyrics)
+        fetchedInternetData = InternetSongData(song.customArtUrl?.substringAfter("|||", "") ?: "", dTitle, dArtist, mem?.fetchedArtUrl?.substringBefore("|||") ?: "", mem?.fetchedLyrics)
         db.saveSongMemory(SongEntity(song.id, mem?.customTitle, mem?.customArtist, mem?.fetchedTitle ?: dTitle, mem?.fetchedArtist ?: dArtist, mem?.fetchedArtUrl, mem?.fetchedLyrics, mem?.isFavorite ?: false, System.currentTimeMillis()))
         if (mem?.fetchedArtUrl == null) { 
             val res = fetchMultiSourceMetadata(dTitle, dArtist)
@@ -266,7 +271,7 @@ fun MusicPlayerUI() {
                             items(liveSearchResults) { song -> 
                                 TrackRow(songId = -1L, title = song.title, artist = song.artist, artUrl = song.artUrl, isPlaying = false, 
                                     onClick = { autoPlayContext = liveSearchResults; autoPlayIndex = liveSearchResults.indexOf(song); playWebSong(song) }, 
-                                    onLongClick = { selectedSongForAction = LocalSong(-(kotlin.math.abs((song.title + song.artist).hashCode().toLong())).let{if(it==0L) -1L else it}, song.title, song.artist, -1L, null, song.artUrl); fetchedInternetData = song }) 
+                                    onLongClick = { selectedSongForAction = LocalSong(-(kotlin.math.abs((song.title + song.artist).hashCode().toLong())).let{if(it==0L) -1L else it}, song.title, song.artist, -1L, null, "${song.artUrl}|||${song.id}"); fetchedInternetData = song }) 
                             }
                         }
                     }
@@ -279,8 +284,9 @@ fun MusicPlayerUI() {
                                 item {
                                     LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(bottom = 24.dp)) {
                                         items(recentlyPlayedSongs) { song ->
-                                            val mem = memoryMap[song.id]; val dTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title; val dArt = mem?.fetchedArtUrl?.takeIf { it.isNotBlank() } ?: song.albumArtUri.toString()
-                                            Column(modifier = Modifier.width(120.dp).clickable { if (song.id < 0) { autoPlayContext = recentlyPlayedSongs.filter { it.id < 0 }.map { InternetSongData(it.id.toString(), it.title, it.artist, it.customArtUrl ?: "") }; autoPlayIndex = autoPlayContext.indexOfFirst { it.title == dTitle }; if (song.webStreamUrl != null) playSongList(song, listOf(song)) else playWebSong(InternetSongData(song.id.toString(), dTitle, song.artist, dArt)) } else playSongList(song, recentlyPlayedSongs.filter{ it.id >= 0 }) }) {
+                                            val mem = memoryMap[song.id]; val dTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title; val dArt = mem?.fetchedArtUrl?.substringBefore("|||") ?: song.albumArtUri.toString()
+                                            val realId = mem?.fetchedArtUrl?.substringAfter("|||", "") ?: ""
+                                            Column(modifier = Modifier.width(120.dp).clickable { if (song.id < 0) { autoPlayContext = recentlyPlayedSongs.filter { it.id < 0 }.map { val rId = it.customArtUrl?.substringAfter("|||", "") ?: ""; InternetSongData(rId, it.title, it.artist, it.customArtUrl?.substringBefore("|||") ?: "") }; autoPlayIndex = autoPlayContext.indexOfFirst { it.title == dTitle }; if (song.webStreamUrl != null) playSongList(song, listOf(song)) else playWebSong(InternetSongData(realId, dTitle, song.artist, dArt)) } else playSongList(song, recentlyPlayedSongs.filter{ it.id >= 0 }) }) {
                                                 SubcomposeAsyncImage(model = dArt, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(120.dp).clip(RoundedCornerShape(12.dp)), error = { BlueWhiteFallback() })
                                                 Spacer(modifier = Modifier.height(6.dp)); Text(dTitle, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                                             }
@@ -294,8 +300,8 @@ fun MusicPlayerUI() {
                                 Row(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = { viewingLikedSongs = false }) { Icon(Icons.Default.ArrowBack, null) }; Text("Liked Songs", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
                                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                                     items(favoriteSongs) { song ->
-                                        val mem = memoryMap[song.id]; val dTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title; val dArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist; val dArt = mem?.fetchedArtUrl?.takeIf { it.isNotBlank() } ?: song.albumArtUri.toString()
-                                        TrackRow(song.id, dTitle, dArtist, dArt, currentSong?.id == song.id, onClick = { if (song.id < 0) { if(song.webStreamUrl != null) playSongList(song, listOf(song)) else playWebSong(InternetSongData(song.id.toString(), dTitle, dArtist, dArt)) } else playSongList(song, favoriteSongs.filter{it.id>=0}) }, onLongClick = { selectedSongForAction = song })
+                                        val mem = memoryMap[song.id]; val dTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title; val dArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist; val dArt = mem?.fetchedArtUrl?.substringBefore("|||") ?: song.albumArtUri.toString(); val realId = mem?.fetchedArtUrl?.substringAfter("|||", "") ?: ""
+                                        TrackRow(song.id, dTitle, dArtist, dArt, currentSong?.id == song.id, onClick = { if (song.id < 0) { if(song.webStreamUrl != null) playSongList(song, listOf(song)) else playWebSong(InternetSongData(realId, dTitle, dArtist, dArt)) } else playSongList(song, favoriteSongs.filter{it.id>=0}) }, onLongClick = { selectedSongForAction = song })
                                     }
                                 }
                             } else if (viewingPlaylistId != null && currentPlaylistData != null) {
@@ -303,8 +309,8 @@ fun MusicPlayerUI() {
                                 val playlistSongs = remember(currentPlaylistData, localSongs) { currentPlaylistData!!.songs.mapNotNull { mem -> if (mem.localMediaId >= 0) localSongs.find { it.id == mem.localMediaId } else LocalSong(mem.localMediaId, mem.fetchedTitle ?: "Unknown", mem.fetchedArtist ?: "Unknown", -1L, null, mem.fetchedArtUrl) } }
                                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                                     items(playlistSongs) { song ->
-                                        val mem = memoryMap[song.id]; val dTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title; val dArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist; val dArt = mem?.fetchedArtUrl?.takeIf { it.isNotBlank() } ?: song.albumArtUri.toString()
-                                        TrackRow(song.id, dTitle, dArtist, dArt, currentSong?.id == song.id, onClick = { if (song.id < 0) { if(song.webStreamUrl != null) playSongList(song, listOf(song)) else playWebSong(InternetSongData(song.id.toString(), dTitle, dArtist, dArt)) } else playSongList(song, playlistSongs.filter{it.id>=0}) }, onLongClick = { selectedSongForAction = song })
+                                        val mem = memoryMap[song.id]; val dTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title; val dArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist; val dArt = mem?.fetchedArtUrl?.substringBefore("|||") ?: song.albumArtUri.toString(); val realId = mem?.fetchedArtUrl?.substringAfter("|||", "") ?: ""
+                                        TrackRow(song.id, dTitle, dArtist, dArt, currentSong?.id == song.id, onClick = { if (song.id < 0) { if(song.webStreamUrl != null) playSongList(song, listOf(song)) else playWebSong(InternetSongData(realId, dTitle, dArtist, dArt)) } else playSongList(song, playlistSongs.filter{it.id>=0}) }, onLongClick = { selectedSongForAction = song })
                                     }
                                 }
                             } else {
@@ -317,7 +323,7 @@ fun MusicPlayerUI() {
                         }
                         3 -> LazyColumn(modifier = Modifier.fillMaxSize()) {
                             items(localSongs) { song ->
-                                val mem = memoryMap[song.id]; val dTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title; val dArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist; val dArt = mem?.fetchedArtUrl?.takeIf { it.isNotBlank() } ?: song.albumArtUri.toString()
+                                val mem = memoryMap[song.id]; val dTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title; val dArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist; val dArt = mem?.fetchedArtUrl?.substringBefore("|||") ?: song.albumArtUri.toString()
                                 TrackRow(song.id, dTitle, dArtist, dArt, currentSong?.id == song.id, onClick = { playSongList(song, localSongs) }, onLongClick = { selectedSongForAction = song })
                             }
                         }
@@ -335,7 +341,7 @@ fun MusicPlayerUI() {
                 playSong = { qSong -> 
                     val qIdx = playQueue.indexOf(qSong)
                     if (qIdx in 0 until exoPlayer.mediaItemCount) { exoPlayer.seekTo(qIdx, C.TIME_UNSET); exoPlayer.play() } 
-                    else if (qSong.id < 0 && qSong.webStreamUrl == null) playWebSong(InternetSongData(qSong.id.toString(), qSong.title, qSong.artist, qSong.customArtUrl?:"")) 
+                    else if (qSong.id < 0 && qSong.webStreamUrl == null) playWebSong(InternetSongData(qSong.customArtUrl?.substringAfter("|||", "") ?: "", qSong.title, qSong.artist, qSong.customArtUrl?.substringBefore("|||")?:"")) 
                     else playSongList(qSong, playQueue)
                 }, 
                 onRemoveFromQueue = { idx -> 
@@ -359,7 +365,7 @@ fun MusicPlayerUI() {
                         if (s.id < 0) {
                             coroutineScope.launch {
                                 Toast.makeText(context, "Fetching stream...", Toast.LENGTH_SHORT).show()
-                                val streamUrl = fetchAudioStreamUrl(s.title, s.artist, if(s.id.toString().startsWith("-")) "" else s.id.toString())
+                                val streamUrl = fetchAudioStreamUrl(s.title, s.artist, s.customArtUrl?.substringAfter("|||", "") ?: "")
                                 if (streamUrl != null) {
                                     playQueue = playQueue + s.copy(webStreamUrl = streamUrl)
                                     exoPlayer.addMediaItem(MediaItem.Builder().setUri(streamUrl).setMediaId(s.id.toString()).build())
@@ -399,7 +405,7 @@ fun MusicPlayerUI() {
 
 @Composable
 fun FullScreenPlayer(song: LocalSong, internetData: InternetSongData?, isPlaying: Boolean, currentPosition: Long, totalDuration: Long, isFavorite: Boolean, queueList: List<LocalSong>, memoryMap: Map<Long, SongEntity>, playSong: (LocalSong) -> Unit, onRemoveFromQueue: (Int) -> Unit, onClose: () -> Unit, onPlayPause: () -> Unit, onNext: () -> Unit, onPrev: () -> Unit, onSeek: (Float) -> Unit, onToggleFavorite: () -> Unit, isLive: Boolean, progress: Float) {
-    val displayTitle = internetData?.title ?: song.title; val displayArtist = internetData?.artist ?: song.artist; val displayArt = internetData?.artUrl?.takeIf { it.isNotEmpty() } ?: song.customArtUrl ?: song.albumArtUri.toString(); var showLyrics by remember { mutableStateOf(false) }; var showQueue by remember { mutableStateOf(false) } 
+    val displayTitle = internetData?.title ?: song.title; val displayArtist = internetData?.artist ?: song.artist; val displayArt = internetData?.artUrl?.substringBefore("|||") ?: song.customArtUrl?.substringBefore("|||") ?: song.albumArtUri.toString(); var showLyrics by remember { mutableStateOf(false) }; var showQueue by remember { mutableStateOf(false) } 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Box(modifier = Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {})) {
             key(displayArt) { SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().blur(radius = 60.dp), error = { BlueWhiteFallback(modifier = Modifier.fillMaxSize()) }, loading = { BlueWhiteFallback(modifier = Modifier.fillMaxSize()) }) }
@@ -455,7 +461,7 @@ fun FullScreenPlayer(song: LocalSong, internetData: InternetSongData?, isPlaying
 
 @Composable
 fun PlayerControlsBar(currentSong: LocalSong, internetData: InternetSongData?, isPlaying: Boolean, currentPosition: Long, totalDuration: Long, onPlayPause: () -> Unit, onNext: () -> Unit, onPrev: () -> Unit, onBarClick: () -> Unit) {
-    val displayTitle = internetData?.title ?: currentSong.title; val displayArtist = internetData?.artist ?: currentSong.artist; val displayArt: String = internetData?.artUrl?.takeIf { it.isNotEmpty() } ?: currentSong.customArtUrl ?: currentSong.albumArtUri.toString()
+    val displayTitle = internetData?.title ?: currentSong.title; val displayArtist = internetData?.artist ?: currentSong.artist; val displayArt = internetData?.artUrl?.substringBefore("|||") ?: currentSong.customArtUrl?.substringBefore("|||") ?: currentSong.albumArtUri.toString()
     val isLive = totalDuration == C.TIME_UNSET || totalDuration <= 0L
     val progress = if (!isLive && totalDuration > 0) (currentPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f) else 0f
 
@@ -503,7 +509,7 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
         val saavnList = mutableListOf<InternetSongData>()
         if (!isPlaylistSearch) {
             try {
-                val finalQuery = if (query.isBlank()) "$language Trending" else if (language != "All" && !query.contains(language, true)) "$query $language" else query
+                val finalQuery = if (language != "All" && !query.contains(language, true)) "$query $language" else query
                 val q = URLEncoder.encode(finalQuery, "UTF-8")
                 val res = fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&query=$q")
                 if (res != null) {
@@ -575,7 +581,7 @@ suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = 
 
     if (safeSongId.startsWith("yt:")) {
         val vid = safeSongId.removePrefix("yt:")
-        val pipedInstances = listOf("pipedapi.kavin.rocks", "pipedapi.tokhmi.xyz", "piped-api.garudalinux.org", "piped.projectsegfau.lt", "pipedapi.in.projectsegfau.lt", "pipedapi.smnz.de")
+        val pipedInstances = listOf("pipedapi.kavin.rocks", "pipedapi.tokhmi.xyz", "piped-api.garudalinux.org", "piped.projectsegfau.lt", "pipedapi.smnz.de")
         for (instance in pipedInstances) {
             try {
                 val streamRes = fetchHttp("https://$instance/streams/$vid") ?: continue
@@ -620,7 +626,7 @@ suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = 
     val cleanTitle = title.replace(Regex("\\(.*?\\)"), "").replace(Regex("\\[.*?\\]"), "").trim()
     val ytQuery = URLEncoder.encode("$cleanTitle $artist official audio", "UTF-8")
     
-    val pipedInstances = listOf("pipedapi.kavin.rocks", "pipedapi.tokhmi.xyz", "piped-api.garudalinux.org", "piped.projectsegfau.lt", "pipedapi.in.projectsegfau.lt", "pipedapi.smnz.de")
+    val pipedInstances = listOf("pipedapi.kavin.rocks", "pipedapi.tokhmi.xyz", "piped-api.garudalinux.org", "piped.projectsegfau.lt", "pipedapi.smnz.de")
     for (instance in pipedInstances) {
         try {
             val searchRes = fetchHttp("https://$instance/search?q=$ytQuery&filter=all") ?: continue
