@@ -36,6 +36,8 @@ import coil.request.ImageRequest
 import kotlinx.coroutines.*
 import org.json.*
 import java.net.*
+import java.text.SimpleDateFormat
+import java.util.*
 
 private val PastelLavenderLight = Color(0xFFB39DDB)
 private val PastelBackgroundLight = Color(0xFFFDFBFD)
@@ -99,13 +101,18 @@ fun MusicPlayerUI() {
     
     LaunchedEffect(viewingPlaylistId) { viewingPlaylistId?.let { id -> currentPlaylistData = db.getPlaylistWithSongs(id) } }
 
-    var selectedLanguage by remember { mutableStateOf("Playlists") }
-    val languages = listOf("Playlists", "All", "Tamil", "English", "Hindi")
+    // THE FIX: Dynamic Languages loaded via zero-permission IP tracking
+    var languages by remember { mutableStateOf(listOf("Playlists", "All", "English")) }
+    var selectedLanguage by remember { mutableStateOf("All") }
+    LaunchedEffect(Unit) { languages = getDynamicLanguages() }
+
     var liveSearchResults by remember { mutableStateOf<List<InternetSongData>>(emptyList()) }; var isLiveSearching by remember { mutableStateOf(false) }
 
     LaunchedEffect(searchQuery, selectedLanguage, isSearchActive) {
         if (!isSearchActive) return@LaunchedEffect
-        delay(400); isLiveSearching = true; liveSearchResults = fetchLiveSearchResults(searchQuery, selectedLanguage); isLiveSearching = false
+        val currentDate = SimpleDateFormat("MMMM yyyy", Locale.getDefault()).format(Date())
+        val q = if (searchQuery.isBlank()) if (selectedLanguage == "All") "Top Trending $currentDate" else "$selectedLanguage Trending $currentDate" else if (selectedLanguage == "All" || selectedLanguage == "Playlists") searchQuery else "$searchQuery $selectedLanguage"
+        delay(400); isLiveSearching = true; liveSearchResults = fetchLiveSearchResults(q, selectedLanguage); isLiveSearching = false
     }
 
     var currentSong by remember { mutableStateOf<LocalSong?>(null) }; var fetchedInternetData by remember { mutableStateOf<InternetSongData?>(null) } 
@@ -122,9 +129,7 @@ fun MusicPlayerUI() {
         val httpDataSourceFactory = DefaultHttpDataSource.Factory().setUserAgent("Mozilla/5.0").setAllowCrossProtocolRedirects(true)
         ExoPlayer.Builder(context).setMediaSourceFactory(DefaultMediaSourceFactory(context).setDataSourceFactory(DefaultDataSource.Factory(context, httpDataSourceFactory))).build().apply {
             setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
-            setHandleAudioBecomingNoisy(true)
-            // REPEAT_MODE_OFF allows the Recommendation Engine to trigger when the queue ends!
-            repeatMode = Player.REPEAT_MODE_OFF 
+            setHandleAudioBecomingNoisy(true); repeatMode = Player.REPEAT_MODE_OFF 
         }
     }
     
@@ -143,7 +148,6 @@ fun MusicPlayerUI() {
         coroutineScope.launch {
             if (webSongData.id.startsWith("ia:")) {
                 withContext(Dispatchers.Main) { Toast.makeText(context, "Deep Scanning Archive... Extracting Files", Toast.LENGTH_SHORT).show() }
-                
                 val iaPlaylist = withContext(Dispatchers.IO) {
                     val id = webSongData.id.removePrefix("ia:")
                     val list = mutableListOf<LocalSong>()
@@ -178,18 +182,11 @@ fun MusicPlayerUI() {
                 
                 if (iaPlaylist.isNotEmpty()) {
                     withContext(Dispatchers.Main) { Toast.makeText(context, "Hidden Collection Found: ${iaPlaylist.size} tracks!", Toast.LENGTH_LONG).show() }
-                    
-                    // SAVE ONLY THE PARENT ALBUM TO HISTORY TO PREVENT POLLUTION AND CRASHES
                     val parentId = -(kotlin.math.abs((webSongData.title + webSongData.artist).hashCode().toLong())).let { if(it==0L) -1L else it }
                     val packedArt = "${webSongData.artUrl}|||${webSongData.id}"
-                    withContext(Dispatchers.IO) { 
-                        db.saveSongMemory(SongEntity(parentId, webSongData.title, webSongData.artist, webSongData.title, webSongData.artist, packedArt, null, memoryMap[parentId]?.isFavorite ?: false, System.currentTimeMillis())) 
-                    }
-                    
+                    withContext(Dispatchers.IO) { db.saveSongMemory(SongEntity(parentId, webSongData.title, webSongData.artist, webSongData.title, webSongData.artist, packedArt, null, memoryMap[parentId]?.isFavorite ?: false, System.currentTimeMillis())) }
                     fetchedInternetData = webSongData; playSongList(iaPlaylist.first(), iaPlaylist); showFullScreenPlayer = true
-                } else {
-                    withContext(Dispatchers.Main) { Toast.makeText(context, "No audio found.", Toast.LENGTH_SHORT).show() }
-                }
+                } else withContext(Dispatchers.Main) { Toast.makeText(context, "No audio found.", Toast.LENGTH_SHORT).show() }
                 return@launch
             }
 
@@ -225,18 +222,13 @@ fun MusicPlayerUI() {
                 if (state == Player.STATE_ENDED) {
                     if (autoPlayContext.isNotEmpty() && autoPlayIndex in 0 until autoPlayContext.size - 1) { 
                         coroutineScope.launch { delay(1000); autoPlayIndex++; playWebSong(autoPlayContext[autoPlayIndex]) } 
-                    } else if (currentSong != null) {
-                        // RECOMMENDATION ENGINE TRIGGER
+                    } else if (currentSong != null && (currentSong!!.id < 0)) {
                         coroutineScope.launch {
                             val cSong = currentSong
                             if (cSong != null) {
                                 withContext(Dispatchers.Main) { Toast.makeText(context, "Finding recommendations...", Toast.LENGTH_SHORT).show() }
                                 val recs = fetchLiveSearchResults("Latest ${cSong.artist} hit songs", "All")
-                                if (recs.isNotEmpty()) {
-                                    autoPlayContext = recs
-                                    autoPlayIndex = 0
-                                    playWebSong(recs[0])
-                                }
+                                if (recs.isNotEmpty()) { autoPlayContext = recs; autoPlayIndex = 0; playWebSong(recs[0]) }
                             }
                         }
                     }
@@ -528,6 +520,38 @@ private fun fetchHttp(urlStr: String): String? {
     } catch (e: Exception) { null }
 }
 
+suspend fun getDynamicLanguages(): List<String> = withContext(Dispatchers.IO) {
+    val langs = mutableListOf("Playlists", "All")
+    try {
+        val deviceLang = Locale.getDefault().displayLanguage
+        if (deviceLang.isNotBlank() && deviceLang != "English") langs.add(deviceLang)
+        
+        val res = fetchHttp("https://ipapi.co/json/")
+        if (res != null) {
+            val json = JSONObject(res)
+            val country = json.optString("country_name", "")
+            val region = json.optString("region", "")
+            
+            if (country.equals("India", true)) {
+                if (region.contains("Tamil", true)) langs.add("Tamil")
+                else if (region.contains("Karnataka", true)) langs.add("Kannada")
+                else if (region.contains("Kerala", true)) langs.add("Malayalam")
+                else if (region.contains("Andhra", true) || region.contains("Telangana", true)) langs.add("Telugu")
+                else if (region.contains("Maharashtra", true)) langs.add("Marathi")
+                else if (region.contains("Gujarat", true)) langs.add("Gujarati")
+                else if (region.contains("Bengal", true)) langs.add("Bengali")
+                else if (region.contains("Punjab", true)) langs.add("Punjabi")
+            } else if (country.isNotBlank() && !country.equals("United States", true) && !country.equals("United Kingdom", true)) {
+                langs.add(country)
+            }
+        }
+    } catch (e: Exception) {}
+    
+    langs.add("English")
+    if (Locale.getDefault().country == "IN" && !langs.contains("Hindi")) langs.add("Hindi")
+    langs.distinct()
+}
+
 suspend fun fetchLiveSearchResults(query: String, language: String): List<InternetSongData> = coroutineScope {
     val results = mutableListOf<InternetSongData>()
     val isPlaylistSearch = language == "Playlists"
@@ -536,14 +560,7 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
         val saavnList = mutableListOf<InternetSongData>()
         if (!isPlaylistSearch) {
             try {
-                val qDate = SimpleDateFormat("yyyy", Locale.getDefault()).format(Date())
-                val finalQuery = if (query.isBlank()) {
-                    if (language == "All") "Top Hits $qDate" else "Latest $language Hit Songs"
-                } else if (language != "All" && !query.contains(language, true)) {
-                    "$query $language"
-                } else query
-                
-                val q = URLEncoder.encode(finalQuery, "UTF-8")
+                val q = URLEncoder.encode(query, "UTF-8")
                 val res = fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&query=$q")
                 if (res != null) {
                     val arr = JSONObject(res).optJSONObject("songs")?.optJSONArray("data")
@@ -583,8 +600,7 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
         val pipedList = mutableListOf<InternetSongData>()
         if (!isPlaylistSearch && query.isNotBlank()) {
             try {
-                val finalQuery = if (language != "All" && !query.contains(language, true)) "$query $language" else query
-                val res = fetchHttp("https://pipedapi.kavin.rocks/search?q=${URLEncoder.encode(finalQuery, "UTF-8")}&filter=music_songs")
+                val res = fetchHttp("https://pipedapi.kavin.rocks/search?q=${URLEncoder.encode(query, "UTF-8")}&filter=music_songs")
                 if (res != null) {
                     val items = JSONObject(res).optJSONArray("items")
                     if (items != null) {
