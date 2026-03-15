@@ -109,12 +109,9 @@ fun MusicPlayerUI() {
 
     LaunchedEffect(searchQuery, selectedLanguage, isSearchActive) {
         if (!isSearchActive) return@LaunchedEffect
-        val q = if (searchQuery.isBlank()) {
-            if (selectedLanguage == "All") "Top Hits" else "$selectedLanguage Hits"
-        } else {
-            if (selectedLanguage == "All" || selectedLanguage == "Playlists") searchQuery else "$searchQuery $selectedLanguage"
-        }
-        delay(400); isLiveSearching = true; liveSearchResults = fetchLiveSearchResults(q, selectedLanguage); isLiveSearching = false
+        delay(400); isLiveSearching = true
+        liveSearchResults = fetchLiveSearchResults(searchQuery, selectedLanguage)
+        isLiveSearching = false
     }
 
     var currentSong by remember { mutableStateOf<LocalSong?>(null) }; var fetchedInternetData by remember { mutableStateOf<InternetSongData?>(null) } 
@@ -573,13 +570,19 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
     val results = mutableListOf<InternetSongData>()
     val isPlaylistSearch = language == "Playlists"
 
+    val finalQuery = if (query.isBlank()) {
+        if (language == "All") "Billboard Global Hot 100" else "$language Trending Hits"
+    } else {
+        if (language != "All" && language != "Playlists" && !query.contains(language, true)) "$query $language" else query
+    }
+    val qEncoded = URLEncoder.encode(finalQuery, "UTF-8")
+
     val saavnTask = async(Dispatchers.IO) {
         val saavnList = mutableListOf<InternetSongData>()
         if (!isPlaylistSearch) {
             try {
-                val finalQuery = if (query.isBlank()) "$language Hits" else if (language != "All" && !query.contains(language, true)) "$query $language" else query
-                val q = URLEncoder.encode(finalQuery, "UTF-8")
-                val res = fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&query=$q")
+                val cc = if (language == "All") "us" else "in"
+                val res = fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=$cc&query=$qEncoded")
                 if (res != null) {
                     val arr = JSONObject(res).optJSONObject("songs")?.optJSONArray("data")
                     if (arr != null) {
@@ -622,10 +625,9 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
 
     val pipedTask = async(Dispatchers.IO) {
         val pipedList = mutableListOf<InternetSongData>()
-        if (!isPlaylistSearch && query.isNotBlank()) {
+        if (!isPlaylistSearch && finalQuery.isNotBlank()) {
             try {
-                val finalQuery = if (language != "All" && !query.contains(language, true)) "$query $language" else query
-                val res = fetchHttp("https://pipedapi.kavin.rocks/search?q=${URLEncoder.encode(finalQuery, "UTF-8")}&filter=music_songs")
+                val res = fetchHttp("https://pipedapi.kavin.rocks/search?q=$qEncoded&filter=music_songs")
                 if (res != null) {
                     val items = JSONObject(res).optJSONArray("items")
                     if (items != null) {
