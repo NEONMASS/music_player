@@ -101,17 +101,28 @@ fun MusicPlayerUI() {
     
     LaunchedEffect(viewingPlaylistId) { viewingPlaylistId?.let { id -> currentPlaylistData = db.getPlaylistWithSongs(id) } }
 
-    var languages by remember { mutableStateOf(listOf("Playlists", "All", "English")) }
-    var selectedLanguage by remember { mutableStateOf("All") }
-    LaunchedEffect(Unit) { languages = getDynamicLanguages() }
+    val languages = listOf("All", "Tamil", "English", "Hindi", "Malayalam", "Telugu", "Kannada", "Marathi", "Bengali", "Punjabi", "Gujarati")
+    var selectedLanguage by remember { mutableStateOf("Tamil") } 
+    var showLangMenu by remember { mutableStateOf(false) }
+    
+    // NEW: Explicit toggle for Playlists vs Tracks
+    var isPlaylistMode by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        val detectedLang = getPrivacyMaskedLanguage()
+        if (languages.contains(detectedLang)) selectedLanguage = detectedLang
+    }
 
     var liveSearchResults by remember { mutableStateOf<List<InternetSongData>>(emptyList()) }; var isLiveSearching by remember { mutableStateOf(false) }
 
-    LaunchedEffect(searchQuery, selectedLanguage, isSearchActive) {
+    LaunchedEffect(searchQuery, selectedLanguage, isPlaylistMode, isSearchActive) {
         if (!isSearchActive) return@LaunchedEffect
-        delay(400); isLiveSearching = true
-        liveSearchResults = fetchLiveSearchResults(searchQuery, selectedLanguage)
-        isLiveSearching = false
+        val q = if (searchQuery.isBlank()) {
+            if (selectedLanguage == "All") "Top Hits" else "$selectedLanguage Hits"
+        } else {
+            if (selectedLanguage == "All") searchQuery else "$searchQuery $selectedLanguage"
+        }
+        delay(400); isLiveSearching = true; liveSearchResults = fetchLiveSearchResults(q, selectedLanguage, isPlaylistMode); isLiveSearching = false
     }
 
     var currentSong by remember { mutableStateOf<LocalSong?>(null) }; var fetchedInternetData by remember { mutableStateOf<InternetSongData?>(null) } 
@@ -233,7 +244,7 @@ fun MusicPlayerUI() {
                             if (cSong != null) {
                                 withContext(Dispatchers.Main) { Toast.makeText(context, "Finding recommendations...", Toast.LENGTH_SHORT).show() }
                                 val recQuery = "${cSong.artist} Hits"
-                                val recs = fetchLiveSearchResults(recQuery, "All")
+                                val recs = fetchLiveSearchResults(recQuery, selectedLanguage, false)
                                 if (recs.isNotEmpty()) { autoPlayContext = recs; autoPlayIndex = 0; playWebSong(recs[0]) }
                             }
                         }
@@ -272,7 +283,36 @@ fun MusicPlayerUI() {
 
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
-            topBar = { TopAppBar(title = { if (isSearchActive) TextField(value = searchQuery, onValueChange = { searchQuery = it }, placeholder = { Text("Search...") }, singleLine = true, colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent)) else Text(when(currentTab) { 0 -> "Dashboard"; 1 -> "Discover"; 2 -> "My Library"; else -> "All Songs" }, fontWeight = FontWeight.Bold) }, actions = { IconButton(onClick = { isSearchActive = !isSearchActive; if (!isSearchActive) searchQuery = "" }) { Icon(if (isSearchActive) Icons.Default.Close else Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary) } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)) },
+            topBar = { 
+                TopAppBar(
+                    title = { 
+                        if (isSearchActive) {
+                            TextField(value = searchQuery, onValueChange = { searchQuery = it }, placeholder = { Text("Search ${if (selectedLanguage == "All") "" else selectedLanguage}...") }, singleLine = true, colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent)) 
+                        } else { 
+                            Text(when(currentTab) { 0 -> "Dashboard"; 1 -> "Discover"; 2 -> "My Library"; else -> "All Songs" }, fontWeight = FontWeight.Bold) 
+                        } 
+                    }, 
+                    actions = { 
+                        if (isSearchActive) {
+                            Box {
+                                IconButton(onClick = { showLangMenu = true }) { Icon(Icons.Default.FilterList, contentDescription = "Filter", tint = MaterialTheme.colorScheme.primary) }
+                                DropdownMenu(expanded = showLangMenu, onDismissRequest = { showLangMenu = false }) {
+                                    languages.forEach { lang ->
+                                        DropdownMenuItem(
+                                            text = { Text(lang, fontWeight = if (selectedLanguage == lang) FontWeight.Bold else FontWeight.Normal, color = if (selectedLanguage == lang) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                                            onClick = { selectedLanguage = lang; showLangMenu = false }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        IconButton(onClick = { isSearchActive = !isSearchActive; if (!isSearchActive) searchQuery = "" }) { 
+                            Icon(if (isSearchActive) Icons.Default.Close else Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary) 
+                        } 
+                    }, 
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
+                ) 
+            },
             bottomBar = { 
                 Column {
                     if (currentSong != null) PlayerControlsBar(currentSong = currentSong!!, internetData = fetchedInternetData, isPlaying = isPlaying, currentPosition = currentPosition, totalDuration = totalDuration, onPlayPause = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }, onNext = { exoPlayer.seekToNextMediaItem() }, onPrev = { exoPlayer.seekToPreviousMediaItem() }, onBarClick = { showFullScreenPlayer = true })
@@ -288,7 +328,13 @@ fun MusicPlayerUI() {
             Column(modifier = Modifier.fillMaxSize().padding(paddingValues).padding(horizontal = 16.dp)) {
                 if (!permissionGranted) { Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Storage permission is required.", color = MaterialTheme.colorScheme.primary) }
                 } else if (isSearchActive) {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 8.dp)) { items(languages) { lang -> FilterChip(selected = selectedLanguage == lang, onClick = { selectedLanguage = lang }, label = { Text(lang) }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))) } }
+                    
+                    // NEW: Hardcoded Filter Chips for Search Mode
+                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = !isPlaylistMode, onClick = { isPlaylistMode = false }, label = { Text("Tracks") }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)))
+                        FilterChip(selected = isPlaylistMode, onClick = { isPlaylistMode = true }, label = { Text("Albums & Playlists") }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)))
+                    }
+
                     if (isLiveSearching) Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                     else if (liveSearchResults.isEmpty()) Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No tracks found.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)) }
                     else {
@@ -526,12 +572,8 @@ private fun fetchHttp(urlStr: String): String? {
     } catch (e: Exception) { null }
 }
 
-suspend fun getDynamicLanguages(): List<String> = withContext(Dispatchers.IO) {
-    val langs = mutableListOf("Playlists", "All")
+suspend fun getPrivacyMaskedLanguage(): String = withContext(Dispatchers.IO) {
     try {
-        val deviceLang = Locale.getDefault().displayLanguage
-        if (deviceLang.isNotBlank() && deviceLang != "English") langs.add(deviceLang)
-        
         var dummyIp = ""
         val myIpRes = fetchHttp("https://api4.ipify.org")
         if (myIpRes != null && myIpRes.contains(".")) {
@@ -547,42 +589,33 @@ suspend fun getDynamicLanguages(): List<String> = withContext(Dispatchers.IO) {
             val region = json.optString("region", "")
             
             if (country.equals("India", true)) {
-                if (region.contains("Tamil", true)) langs.add("Tamil")
-                else if (region.contains("Karnataka", true)) langs.add("Kannada")
-                else if (region.contains("Kerala", true)) langs.add("Malayalam")
-                else if (region.contains("Andhra", true) || region.contains("Telangana", true)) langs.add("Telugu")
-                else if (region.contains("Maharashtra", true)) langs.add("Marathi")
-                else if (region.contains("Gujarat", true)) langs.add("Gujarati")
-                else if (region.contains("Bengal", true)) langs.add("Bengali")
-                else if (region.contains("Punjab", true)) langs.add("Punjabi")
+                if (region.contains("Tamil", true)) return@withContext "Tamil"
+                if (region.contains("Karnataka", true)) return@withContext "Kannada"
+                if (region.contains("Kerala", true)) return@withContext "Malayalam"
+                if (region.contains("Andhra", true) || region.contains("Telangana", true)) return@withContext "Telugu"
+                if (region.contains("Maharashtra", true)) return@withContext "Marathi"
+                if (region.contains("Gujarat", true)) return@withContext "Gujarati"
+                if (region.contains("Bengal", true)) return@withContext "Bengali"
+                if (region.contains("Punjab", true)) return@withContext "Punjabi"
+                return@withContext "Hindi"
             } else if (country.isNotBlank() && !country.equals("United States", true) && !country.equals("United Kingdom", true)) {
-                langs.add(country)
+                return@withContext country
             }
         }
     } catch (e: Exception) {}
     
-    langs.add("English")
-    if (Locale.getDefault().country == "IN" && !langs.contains("Hindi")) langs.add("Hindi")
-    return@withContext langs.distinct()
+    return@withContext "Tamil" 
 }
 
-suspend fun fetchLiveSearchResults(query: String, language: String): List<InternetSongData> = coroutineScope {
+suspend fun fetchLiveSearchResults(query: String, language: String, isPlaylistSearch: Boolean): List<InternetSongData> = coroutineScope {
     val results = mutableListOf<InternetSongData>()
-    val isPlaylistSearch = language == "Playlists"
-
-    val finalQuery = if (query.isBlank()) {
-        if (language == "All") "Billboard Global Hot 100" else "$language Trending Hits"
-    } else {
-        if (language != "All" && language != "Playlists" && !query.contains(language, true)) "$query $language" else query
-    }
-    val qEncoded = URLEncoder.encode(finalQuery, "UTF-8")
 
     val saavnTask = async(Dispatchers.IO) {
         val saavnList = mutableListOf<InternetSongData>()
         if (!isPlaylistSearch) {
             try {
-                val cc = if (language == "All") "us" else "in"
-                val res = fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=$cc&query=$qEncoded")
+                val qEncoded = URLEncoder.encode(query, "UTF-8")
+                val res = fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&query=$qEncoded")
                 if (res != null) {
                     val arr = JSONObject(res).optJSONObject("songs")?.optJSONArray("data")
                     if (arr != null) {
@@ -625,9 +658,9 @@ suspend fun fetchLiveSearchResults(query: String, language: String): List<Intern
 
     val pipedTask = async(Dispatchers.IO) {
         val pipedList = mutableListOf<InternetSongData>()
-        if (!isPlaylistSearch && finalQuery.isNotBlank()) {
+        if (!isPlaylistSearch && query.isNotBlank()) {
             try {
-                val res = fetchHttp("https://pipedapi.kavin.rocks/search?q=$qEncoded&filter=music_songs")
+                val res = fetchHttp("https://pipedapi.kavin.rocks/search?q=${URLEncoder.encode(query, "UTF-8")}&filter=music_songs")
                 if (res != null) {
                     val items = JSONObject(res).optJSONArray("items")
                     if (items != null) {
