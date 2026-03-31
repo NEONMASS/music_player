@@ -1,67 +1,39 @@
-package com.neo.musicplayer
+import android.os.Bundle
+import androidx.appcompat.app.AppCompatActivity
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import javax.inject.Inject
 
-import androidx.compose.runtime.*nimport androidx.lifecycle.*nimport kotlinx.coroutines.*nimport okhttp3.*n
 class MainActivity : AppCompatActivity() {
-    private var searchJob: Job? = null
-    private val client = OkHttpClient()
+    @Inject
+    lateinit var repository: Repository
 
-    override fun onDestroy() {
-        super.onDestroy()
-        // Cancel search jobs when the activity is destroyed
-        searchJob?.cancel()
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+        fetchData()
     }
 
-    // Examples of improvements:
-
-    private fun fetchWithRetry(url: String, retries: Int = 3, delay: Long = 1000) {
-        var attempt = 0
-        var backoff = delay
-        while (attempt < retries) {
+    private fun fetchData() {
+        CoroutineScope(Dispatchers.IO).launch {
             try {
-                // network call logic here
-                break // call successful
-            } catch (e: IOException) {
-                attempt++
-                if (attempt == retries) throw e
-                // Implement exponential backoff
-                Thread.sleep(backoff)
-                backoff *= 2
-            } catch (e: HttpException) {
-                // Handle HTTP error
-                logError(e)
-                break
+                val data = repository.getData() // Async operation using repository
+                withContext(Dispatchers.Main) {
+                    updateUI(data) // Update UI on the main thread
+                }
             } catch (e: Exception) {
-                // General exception handling
-                logError(e)
-                break
+                handleError(e) // Proper error handling
             }
         }
     }
 
-    private fun logError(e: Exception) {
-        // Implement logging logic here
+    private fun updateUI(data: DataType) {
+        // Update the UI with data
     }
 
-    // Compile regex patterns once at module level
-    val pattern = Regex("your-regex-pattern")
-
-    // Implement cache strategy using Room instead of SharedPreferences
-    private fun cacheData(data: YourDataType) {
-        // Room code to cache data
+    private fun handleError(e: Exception) {
+        // Handle errors here, log or show a message
     }
-
-    @Composable
-    fun yourComposableFunction() {
-        DisposableEffect(Unit) {
-            // Your cleanup logic here
-            onDispose { cleanup() }
-        }
-    }
-
-    private fun cleanup() {
-        // Cleanup resources here
-    }
-
-    // Using derivedStateOf for computed values
-    val computedValue by derivedStateOf { calculateSomething() }
 }
