@@ -37,24 +37,27 @@ import kotlinx.coroutines.*
 import org.json.*
 import java.net.*
 import java.util.*
-import java.text.SimpleDateFormat
 
-private val PastelLavenderLight = Color(0xFFB39DDB)
-private val PastelBackgroundLight = Color(0xFFFDFBFD)
-private val PastelSurfaceLight = Color(0xFFF4EFFC)
-private val PastelLavenderDark = Color(0xFFD1B3FF)
-private val PastelBackgroundDark = Color(0xFF1E1E2E)
-private val PastelSurfaceDark = Color(0xFF2A2A3C)
+// MINIMALIST MONOCHROME THEME
+private val MinBgLight = Color(0xFFFAFAFA)
+private val MinSurfaceLight = Color(0xFFFFFFFF)
+private val MinTextLight = Color(0xFF121212)
+private val MinPrimaryLight = Color(0xFF000000)
+
+private val MinBgDark = Color(0xFF0A0A0A)
+private val MinSurfaceDark = Color(0xFF141414)
+private val MinTextDark = Color(0xFFF5F5F5)
+private val MinPrimaryDark = Color(0xFFFFFFFF)
 
 @Composable
 fun AestheticTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
-    val colorScheme = if (darkTheme) darkColorScheme(primary = PastelLavenderDark, background = PastelBackgroundDark, surface = PastelSurfaceDark, onSurface = Color(0xFFE0E0E0)) else lightColorScheme(primary = PastelLavenderLight, background = PastelBackgroundLight, surface = PastelSurfaceLight, onSurface = Color(0xFF4A4A4A))
+    val colorScheme = if (darkTheme) darkColorScheme(primary = MinPrimaryDark, background = MinBgDark, surface = MinSurfaceDark, onSurface = MinTextDark) else lightColorScheme(primary = MinPrimaryLight, background = MinBgLight, surface = MinSurfaceLight, onSurface = MinTextLight)
     MaterialTheme(colorScheme = colorScheme, content = content)
 }
 
 @Composable
 fun BlueWhiteFallback(modifier: Modifier = Modifier, iconSize: Dp = 48.dp) {
-    Box(modifier = modifier.background(Brush.linearGradient(listOf(Color(0xFF1976D2), Color(0xFFBBDEFB)))), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, contentDescription = "Music", tint = Color.White.copy(alpha = 0.9f), modifier = Modifier.size(iconSize)) }
+    Box(modifier = modifier.background(Color.Gray.copy(alpha = 0.2f)), contentAlignment = Alignment.Center) { Icon(Icons.Default.MusicNote, contentDescription = "Music", tint = Color.Gray.copy(alpha = 0.6f), modifier = Modifier.size(iconSize)) }
 }
 
 data class LocalSong(val id: Long, val title: String, val artist: String, val albumId: Long, val webStreamUrl: String? = null, val customArtUrl: String? = null) { val albumArtUri: Uri get() = if(customArtUrl != null) Uri.parse(customArtUrl.substringBefore("|||")) else Uri.parse("content://media/external/audio/albumart/$albumId") }
@@ -67,16 +70,16 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TrackRow(songId: Long, title: String, artist: String, artUrl: String, isPlaying: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-        Row(modifier = Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick).padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            SubcomposeAsyncImage(model = artUrl, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)), error = { BlueWhiteFallback() }, loading = { BlueWhiteFallback() })
-            Spacer(modifier = Modifier.width(16.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(title, fontWeight = FontWeight.SemiBold, maxLines = 1, color = if (isPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                Text(artist, style = MaterialTheme.typography.bodySmall, maxLines = 1, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
-            }
-            if (songId < 0) Icon(Icons.Default.CloudDownload, contentDescription = null, tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f), modifier = Modifier.size(24.dp))
+    // MINIMALIST TRACK ROW: Removed bulky cards. Clean, flat design with soft padding.
+    Row(modifier = Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick).padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        SubcomposeAsyncImage(model = artUrl, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(52.dp).clip(RoundedCornerShape(6.dp)), error = { BlueWhiteFallback() }, loading = { BlueWhiteFallback() })
+        Spacer(modifier = Modifier.width(16.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontWeight = if (isPlaying) FontWeight.Bold else FontWeight.Medium, fontSize = 16.sp, maxLines = 1, color = if (isPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(artist, style = MaterialTheme.typography.bodySmall, fontSize = 13.sp, maxLines = 1, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
         }
+        if (songId < 0) Icon(Icons.Default.CloudDownload, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f), modifier = Modifier.size(20.dp))
     }
 }
 
@@ -285,7 +288,12 @@ fun MusicPlayerUI() {
                             if (cSong != null) {
                                 val recQuery = "${cSong.artist} Hits"
                                 val recs = fetchLiveSearchResults(recQuery, "All", false)
-                                if (recs.isNotEmpty()) { autoPlayContext = recs; autoPlayIndex = 0; playWebSong(recs[0]) }
+                                if (recs.isNotEmpty()) { 
+                                    // FIXED: Visually notify the user what song the recommendation engine just selected
+                                    val nextSong = recs[0]
+                                    withContext(Dispatchers.Main) { Toast.makeText(context, "Up next: ${nextSong.title}", Toast.LENGTH_LONG).show() }
+                                    autoPlayContext = recs; autoPlayIndex = 0; playWebSong(nextSong) 
+                                }
                             }
                         }
                     }
@@ -333,16 +341,16 @@ fun MusicPlayerUI() {
                     }, 
                     actions = { 
                         IconButton(onClick = { isSearchActive = !isSearchActive; if (!isSearchActive) searchQuery = "" }) { 
-                            Icon(if (isSearchActive) Icons.Default.Close else Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary) 
+                            Icon(if (isSearchActive) Icons.Default.Close else Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface) 
                         } 
                     }, 
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background.copy(alpha = 0.95f))
                 ) 
             },
             bottomBar = { 
                 Column {
                     if (currentSong != null) PlayerControlsBar(currentSong = currentSong!!, internetData = fetchedInternetData, isPlaying = isPlaying, currentPosition = currentPosition, totalDuration = totalDuration, onPlayPause = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }, onNext = handleNext, onPrev = handlePrev, onBarClick = { showFullScreenPlayer = true })
-                    NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 8.dp) {
+                    NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
                         NavigationBarItem(icon = { Icon(Icons.Default.Home, null) }, label = { Text("Home", fontSize = 10.sp) }, selected = currentTab == 0 && !isSearchActive, onClick = { currentTab = 0; isSearchActive = false; viewingLikedSongs = false; viewingPlaylistId = null })
                         NavigationBarItem(icon = { Icon(Icons.Default.Search, null) }, label = { Text("Search", fontSize = 10.sp) }, selected = isSearchActive, onClick = { isSearchActive = true; currentTab = 1 })
                         NavigationBarItem(icon = { Icon(Icons.Default.QueueMusic, null) }, label = { Text("Library", fontSize = 10.sp) }, selected = currentTab == 2 && !isSearchActive, onClick = { currentTab = 2; isSearchActive = false })
@@ -351,32 +359,30 @@ fun MusicPlayerUI() {
                 }
             }, containerColor = MaterialTheme.colorScheme.background
         ) { paddingValues ->
-            Column(modifier = Modifier.fillMaxSize().padding(paddingValues).padding(horizontal = 16.dp)) {
+            Column(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
                 if (!permissionGranted) { Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Storage permission is required.", color = MaterialTheme.colorScheme.primary) }
                 } else if (isSearchActive) {
                     
-                    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FilterChip(selected = !isPlaylistMode, onClick = { isPlaylistMode = false }, label = { Text("Tracks") }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)))
-                            FilterChip(selected = isPlaylistMode, onClick = { isPlaylistMode = true }, label = { Text("Albums & Playlists") }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)))
+                            FilterChip(selected = !isPlaylistMode, onClick = { isPlaylistMode = false }, label = { Text("Tracks") }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)), shape = RoundedCornerShape(20.dp))
+                            FilterChip(selected = isPlaylistMode, onClick = { isPlaylistMode = true }, label = { Text("Albums & Playlists") }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)), shape = RoundedCornerShape(20.dp))
                         }
                         LazyRow(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             items(languages) { lang -> 
                                 FilterChip(
                                     selected = selectedLanguage == lang, 
-                                    onClick = { 
-                                        selectedLanguage = lang
-                                        sharedPrefs.edit().putString("saved_lang", lang).apply() 
-                                    }, 
+                                    onClick = { selectedLanguage = lang; sharedPrefs.edit().putString("saved_lang", lang).apply() }, 
                                     label = { Text(lang) }, 
-                                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+                                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)),
+                                    shape = RoundedCornerShape(20.dp)
                                 ) 
                             }
                         }
                     }
 
-                    if (isLiveSearching) Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-                    else if (liveSearchResults.isEmpty()) Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No tracks found.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)) }
+                    if (isLiveSearching) Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = MaterialTheme.colorScheme.onSurface) }
+                    else if (liveSearchResults.isEmpty()) Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No tracks found.", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)) }
                     else {
                         LazyColumn(modifier = Modifier.fillMaxSize()) {
                             items(liveSearchResults) { song -> 
@@ -389,17 +395,17 @@ fun MusicPlayerUI() {
                 } else {
                     when (currentTab) {
                         0 -> LazyColumn(modifier = Modifier.fillMaxSize()) {
-                            item { Spacer(modifier = Modifier.height(8.dp)) }
+                            item { Spacer(modifier = Modifier.height(16.dp)) }
                             if (recentlyPlayedSongs.isNotEmpty()) {
-                                item { Text("Recently Played", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp)) }
+                                item { Text("Recently Played", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 16.dp, bottom = 12.dp)) }
                                 item {
-                                    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(bottom = 24.dp)) {
+                                    LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp), contentPadding = PaddingValues(horizontal = 16.dp), modifier = Modifier.padding(bottom = 32.dp)) {
                                         items(recentlyPlayedSongs) { song ->
                                             val mem = memoryMap[song.id]; val dTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title; val dArt = mem?.fetchedArtUrl?.substringBefore("|||") ?: song.albumArtUri.toString()
                                             val realId = mem?.fetchedArtUrl?.substringAfter("|||", "") ?: ""
                                             Column(modifier = Modifier.width(120.dp).clickable { if (song.id < 0) { autoPlayContext = recentlyPlayedSongs.filter { it.id < 0 }.map { val rId = it.customArtUrl?.substringAfter("|||", "") ?: ""; InternetSongData(rId, it.title, it.artist, it.customArtUrl?.substringBefore("|||") ?: "") }; autoPlayIndex = autoPlayContext.indexOfFirst { it.title == dTitle }; if (song.webStreamUrl != null) playSongList(song, listOf(song)) else playWebSong(InternetSongData(realId, dTitle, song.artist, dArt)) } else playSongList(song, recentlyPlayedSongs.filter{ it.id >= 0 }) }) {
-                                                SubcomposeAsyncImage(model = dArt, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(120.dp).clip(RoundedCornerShape(12.dp)), error = { BlueWhiteFallback() })
-                                                Spacer(modifier = Modifier.height(6.dp)); Text(dTitle, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                                                SubcomposeAsyncImage(model = dArt, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(120.dp).clip(RoundedCornerShape(8.dp)), error = { BlueWhiteFallback() })
+                                                Spacer(modifier = Modifier.height(8.dp)); Text(dTitle, fontWeight = FontWeight.Medium, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                             }
                                         }
                                     }
@@ -408,7 +414,7 @@ fun MusicPlayerUI() {
                         }
                         2 -> {
                             if (viewingLikedSongs) {
-                                Row(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = { viewingLikedSongs = false }) { Icon(Icons.Default.ArrowBack, null) }; Text("Liked Songs", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
+                                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = { viewingLikedSongs = false }) { Icon(Icons.Default.ArrowBack, null) }; Text("Liked Songs", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
                                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                                     items(favoriteSongs) { song ->
                                         val mem = memoryMap[song.id]; val dTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title; val dArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist; val dArt = mem?.fetchedArtUrl?.substringBefore("|||") ?: song.albumArtUri.toString(); val realId = mem?.fetchedArtUrl?.substringAfter("|||", "") ?: ""
@@ -416,7 +422,7 @@ fun MusicPlayerUI() {
                                     }
                                 }
                             } else if (viewingPlaylistId != null && currentPlaylistData != null) {
-                                Row(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = { viewingPlaylistId = null }) { Icon(Icons.Default.ArrowBack, null) }; Text(currentPlaylistData!!.playlist.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
+                                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) { IconButton(onClick = { viewingPlaylistId = null }) { Icon(Icons.Default.ArrowBack, null) }; Text(currentPlaylistData!!.playlist.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
                                 val playlistSongs = remember(currentPlaylistData, localSongs) { currentPlaylistData!!.songs.mapNotNull { mem -> if (mem.localMediaId >= 0) localSongs.find { it.id == mem.localMediaId } else LocalSong(mem.localMediaId, mem.fetchedTitle ?: "Unknown", mem.fetchedArtist ?: "Unknown", -1L, null, mem.fetchedArtUrl) } }
                                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                                     items(playlistSongs) { song ->
@@ -425,10 +431,10 @@ fun MusicPlayerUI() {
                                     }
                                 }
                             } else {
-                                Row(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Text("Your Library", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); Button(onClick = { showCreatePlaylistDialog = true }) { Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(4.dp)); Text("New") } }
-                                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                                    item { Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).clickable { viewingLikedSongs = true }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) { Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Box(modifier = Modifier.size(64.dp).clip(RoundedCornerShape(8.dp)).background(Brush.linearGradient(listOf(Color(0xFFFF4081), Color(0xFFE91E63)))), contentAlignment = Alignment.Center) { Icon(Icons.Default.Favorite, null, tint = Color.White) }; Spacer(modifier = Modifier.width(16.dp)); Column { Text("Liked Songs", fontWeight = FontWeight.Bold, fontSize = 18.sp); Text("${favoriteSongs.size} tracks", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)) } } } }
-                                    items(customPlaylists) { playlist -> Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).clickable { viewingPlaylistId = playlist.playlistId }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) { Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Box(modifier = Modifier.size(64.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)), contentAlignment = Alignment.Center) { Icon(Icons.Default.QueueMusic, null, tint = MaterialTheme.colorScheme.primary) }; Spacer(modifier = Modifier.width(16.dp)); Column { Text(playlist.name, fontWeight = FontWeight.Bold, fontSize = 18.sp); Text("Custom Playlist", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)) } } } }
+                                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Text("Your Library", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); IconButton(onClick = { showCreatePlaylistDialog = true }) { Icon(Icons.Default.Add, null) } }
+                                LazyColumn(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+                                    item { Row(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp).clickable { viewingLikedSongs = true }, verticalAlignment = Alignment.CenterVertically) { Box(modifier = Modifier.size(56.dp).clip(RoundedCornerShape(8.dp)).background(Color.Black), contentAlignment = Alignment.Center) { Icon(Icons.Default.Favorite, null, tint = Color.White) }; Spacer(modifier = Modifier.width(16.dp)); Column { Text("Liked Songs", fontWeight = FontWeight.Bold, fontSize = 16.sp); Text("${favoriteSongs.size} tracks", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f), fontSize = 13.sp) } } }
+                                    items(customPlaylists) { playlist -> Row(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp).clickable { viewingPlaylistId = playlist.playlistId }, verticalAlignment = Alignment.CenterVertically) { Box(modifier = Modifier.size(56.dp).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)), contentAlignment = Alignment.Center) { Icon(Icons.Default.QueueMusic, null) }; Spacer(modifier = Modifier.width(16.dp)); Column { Text(playlist.name, fontWeight = FontWeight.Bold, fontSize = 16.sp); Text("Playlist", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f), fontSize = 13.sp) } } }
                                 }
                             }
                         }
@@ -514,55 +520,54 @@ fun MusicPlayerUI() {
 @Composable
 fun FullScreenPlayer(song: LocalSong, internetData: InternetSongData?, isPlaying: Boolean, currentPosition: Long, totalDuration: Long, isFavorite: Boolean, queueList: List<LocalSong>, memoryMap: Map<Long, SongEntity>, playSong: (LocalSong) -> Unit, onRemoveFromQueue: (Int) -> Unit, onClose: () -> Unit, onPlayPause: () -> Unit, onNext: () -> Unit, onPrev: () -> Unit, onSeek: (Float) -> Unit, onToggleFavorite: () -> Unit, isLive: Boolean, progress: Float) {
     val displayTitle = internetData?.title ?: song.title; val displayArtist = internetData?.artist ?: song.artist; val displayArt = internetData?.artUrl?.substringBefore("|||") ?: song.customArtUrl?.substringBefore("|||") ?: song.albumArtUri.toString(); var showLyrics by remember { mutableStateOf(false) }; var showQueue by remember { mutableStateOf(false) } 
-    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Box(modifier = Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {})) {
-            key(displayArt) { SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().blur(radius = 60.dp), error = { BlueWhiteFallback(modifier = Modifier.fillMaxSize()) }, loading = { BlueWhiteFallback(modifier = Modifier.fillMaxSize()) }) }
-            Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f)))
-            Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = onClose) { Icon(Icons.Default.KeyboardArrowDown, null, modifier = Modifier.size(36.dp), tint = Color.White) }
-                    Row { 
-                        IconButton(onClick = { showQueue = !showQueue; if(showQueue) showLyrics = false }) { Icon(if (showQueue) Icons.Default.QueueMusic else Icons.Default.FormatListBulleted, null, tint = Color.White) }
-                        if (internetData?.lyrics != null) IconButton(onClick = { showLyrics = !showLyrics; if(showLyrics) showQueue = false }) { Icon(if (showLyrics) Icons.Default.MusicNote else Icons.Default.Subject, null, tint = Color.White) } 
-                    }
+    
+    // MINIMALIST FULL SCREEN: Edge-to-edge album art with sleek gradient fade
+    Box(modifier = Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {})) {
+        SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(1000).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize(), error = { Box(Modifier.fillMaxSize().background(Color.DarkGray)) }, loading = { Box(Modifier.fillMaxSize().background(Color.DarkGray)) })
+        Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(colors = listOf(Color.Black.copy(alpha = 0.2f), Color.Black.copy(alpha = 0.9f), Color.Black), startY = 0f, endY = 2000f)))
+        
+        Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onClose) { Icon(Icons.Default.KeyboardArrowDown, null, modifier = Modifier.size(36.dp), tint = Color.White) }
+                Row { 
+                    IconButton(onClick = { showQueue = !showQueue; if(showQueue) showLyrics = false }) { Icon(if (showQueue) Icons.Default.QueueMusic else Icons.Default.FormatListBulleted, null, tint = Color.White) }
+                    if (internetData?.lyrics != null) IconButton(onClick = { showLyrics = !showLyrics; if(showLyrics) showQueue = false }) { Icon(if (showLyrics) Icons.Default.MusicNote else Icons.Default.Subject, null, tint = Color.White) } 
                 }
-                Spacer(modifier = Modifier.height(16.dp))
-                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    if (showQueue) {
-                        LazyColumn(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.4f), RoundedCornerShape(16.dp)).padding(8.dp)) {
-                            itemsIndexed(queueList) { idx, queueSong ->
-                                val mem = memoryMap[queueSong.id]; val qTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: queueSong.title; val qArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: queueSong.artist
-                                Row(modifier = Modifier.fillMaxWidth().clickable { playSong(queueSong) }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) { 
-                                    Icon(if (queueSong.id == song.id) Icons.Default.PlayArrow else Icons.Default.MusicNote, null, tint = if (queueSong.id == song.id) MaterialTheme.colorScheme.primary else Color.White, modifier = Modifier.size(24.dp))
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Column(modifier = Modifier.weight(1f)) { Text(qTitle, fontWeight = if (queueSong.id == song.id) FontWeight.Bold else FontWeight.Normal, color = if (queueSong.id == song.id) MaterialTheme.colorScheme.primary else Color.White, maxLines = 1); Text(qArtist, style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.7f), maxLines = 1) }
-                                    IconButton(onClick = { onRemoveFromQueue(idx) }) { Icon(Icons.Default.Close, null, tint = Color.White.copy(alpha=0.5f)) } 
-                                }
-                            }
+            }
+            Spacer(modifier = Modifier.weight(1f))
+            if (showQueue) {
+                LazyColumn(modifier = Modifier.fillMaxWidth().height(400.dp).background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(12.dp)).padding(8.dp)) {
+                    itemsIndexed(queueList) { idx, queueSong ->
+                        val mem = memoryMap[queueSong.id]; val qTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: queueSong.title; val qArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: queueSong.artist
+                        Row(modifier = Modifier.fillMaxWidth().clickable { playSong(queueSong) }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) { 
+                            Icon(if (queueSong.id == song.id) Icons.Default.PlayArrow else Icons.Default.MusicNote, null, tint = Color.White, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) { Text(qTitle, fontWeight = if (queueSong.id == song.id) FontWeight.Bold else FontWeight.Normal, color = Color.White, maxLines = 1); Text(qArtist, style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.7f), maxLines = 1) }
+                            IconButton(onClick = { onRemoveFromQueue(idx) }) { Icon(Icons.Default.Close, null, tint = Color.White.copy(alpha=0.5f)) } 
                         }
-                    } else if (showLyrics && internetData?.lyrics != null) { 
-                        Text(text = internetData.lyrics, style = MaterialTheme.typography.titleMedium.copy(lineHeight = 28.sp), color = Color.White, textAlign = TextAlign.Center, modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = { showLyrics = false }))
-                    } else { 
-                        Card(modifier = Modifier.fillMaxWidth().aspectRatio(1f).shadow(24.dp, RoundedCornerShape(32.dp)).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = { if (internetData?.lyrics != null) showLyrics = true }), shape = RoundedCornerShape(32.dp)) { SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(1000).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize(), error = { BlueWhiteFallback(modifier = Modifier.fillMaxSize(), iconSize = 80.dp) }, loading = { BlueWhiteFallback(modifier = Modifier.fillMaxSize(), iconSize = 80.dp) }) } 
                     }
-                }
-                Spacer(modifier = Modifier.height(32.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { 
-                    Column(modifier = Modifier.weight(1f)) { Text(displayTitle, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1); Spacer(modifier = Modifier.height(4.dp)); Text(displayArtist, style = MaterialTheme.typography.titleMedium, color = Color.White.copy(alpha = 0.8f), maxLines = 1) }
-                    IconButton(onClick = onToggleFavorite) { Icon(if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder, null, modifier = Modifier.size(32.dp), tint = if (isFavorite) Color.Red else Color.White) } 
                 }
                 Spacer(modifier = Modifier.height(24.dp))
-                Slider(value = progress, onValueChange = onSeek, modifier = Modifier.fillMaxWidth(), colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color.White.copy(alpha = 0.3f)))
-                val formatTime = { ms: Long -> val totalSeconds = ms / 1000; String.format("%02d:%02d", totalSeconds / 60, totalSeconds % 60) }
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(if(isLive) "LIVE" else formatTime(currentPosition), style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.7f)); Text(if(isLive) "LIVE" else formatTime(totalDuration), style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.7f)) }
-                Spacer(modifier = Modifier.height(32.dp))
-                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceEvenly) { 
-                    IconButton(onClick = onPrev) { Icon(Icons.Default.SkipPrevious, null, modifier = Modifier.size(48.dp), tint = Color.White) }
-                    Box(modifier = Modifier.size(80.dp).clip(CircleShape).background(Color.White).clickable { onPlayPause() }, contentAlignment = Alignment.Center) { Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null, modifier = Modifier.size(48.dp), tint = Color.Black) }
-                    IconButton(onClick = onNext) { Icon(Icons.Default.SkipNext, null, modifier = Modifier.size(48.dp), tint = Color.White) } 
-                }
-                Spacer(modifier = Modifier.height(16.dp))
+            } else if (showLyrics && internetData?.lyrics != null) { 
+                Text(text = internetData.lyrics, style = MaterialTheme.typography.titleMedium.copy(lineHeight = 28.sp), color = Color.White, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().height(400.dp).verticalScroll(rememberScrollState()).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = { showLyrics = false }))
+                Spacer(modifier = Modifier.height(24.dp))
             }
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { 
+                Column(modifier = Modifier.weight(1f)) { Text(displayTitle, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1); Spacer(modifier = Modifier.height(4.dp)); Text(displayArtist, style = MaterialTheme.typography.titleMedium, color = Color.White.copy(alpha = 0.6f), maxLines = 1) }
+                IconButton(onClick = onToggleFavorite) { Icon(if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder, null, modifier = Modifier.size(32.dp), tint = if (isFavorite) Color.White else Color.White.copy(alpha = 0.5f)) } 
+            }
+            Spacer(modifier = Modifier.height(24.dp))
+            Slider(value = progress, onValueChange = onSeek, modifier = Modifier.fillMaxWidth(), colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color.White.copy(alpha = 0.2f)))
+            val formatTime = { ms: Long -> val totalSeconds = ms / 1000; String.format("%02d:%02d", totalSeconds / 60, totalSeconds % 60) }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(if(isLive) "LIVE" else formatTime(currentPosition), style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.5f)); Text(if(isLive) "LIVE" else formatTime(totalDuration), style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.5f)) }
+            Spacer(modifier = Modifier.height(32.dp))
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceEvenly) { 
+                IconButton(onClick = onPrev) { Icon(Icons.Default.SkipPrevious, null, modifier = Modifier.size(48.dp), tint = Color.White) }
+                Box(modifier = Modifier.size(80.dp).clip(CircleShape).background(Color.White).clickable { onPlayPause() }, contentAlignment = Alignment.Center) { Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null, modifier = Modifier.size(48.dp), tint = Color.Black) }
+                IconButton(onClick = onNext) { Icon(Icons.Default.SkipNext, null, modifier = Modifier.size(48.dp), tint = Color.White) } 
+            }
+            Spacer(modifier = Modifier.height(32.dp))
         }
     }
 }
@@ -573,14 +578,15 @@ fun PlayerControlsBar(currentSong: LocalSong, internetData: InternetSongData?, i
     val isLive = totalDuration == C.TIME_UNSET || totalDuration <= 0L
     val progress = if (!isLive && totalDuration > 0) (currentPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f) else 0f
 
-    Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth().clickable { onBarClick() }, shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp), shadowElevation = 8.dp) {
-        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-            LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().height(2.dp), color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
-            Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)), error = { BlueWhiteFallback(modifier = Modifier.fillMaxSize(), iconSize = 20.dp) }, loading = { BlueWhiteFallback(modifier = Modifier.fillMaxSize(), iconSize = 20.dp) })
+    // MINIMALIST FLOATING PILL
+    Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).clickable { onBarClick() }, shape = RoundedCornerShape(16.dp), shadowElevation = 12.dp) {
+        Column {
+            LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().height(2.dp), color = MaterialTheme.colorScheme.onSurface, trackColor = Color.Transparent)
+            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(true).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(44.dp).clip(RoundedCornerShape(8.dp)), error = { BlueWhiteFallback() }, loading = { BlueWhiteFallback() })
                 Spacer(modifier = Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) { Text(displayTitle, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary, maxLines = 1); Text(displayArtist, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f), maxLines = 1) }
-                Row { IconButton(onClick = onPrev) { Icon(Icons.Default.SkipPrevious, null, tint = MaterialTheme.colorScheme.primary) }; IconButton(onClick = onPlayPause) { Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(40.dp)) }; IconButton(onClick = onNext) { Icon(Icons.Default.SkipNext, null, tint = MaterialTheme.colorScheme.primary) } }
+                Column(modifier = Modifier.weight(1f)) { Text(displayTitle, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1); Text(displayArtist, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), maxLines = 1) }
+                Row { IconButton(onClick = onPlayPause) { Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(32.dp)) }; IconButton(onClick = onNext) { Icon(Icons.Default.SkipNext, null, tint = MaterialTheme.colorScheme.onSurface) } }
             }
         }
     }
@@ -652,7 +658,8 @@ suspend fun fetchLiveSearchResults(query: String, language: String, isPlaylistSe
                         if (arr != null && arr.length() > 0) {
                             for (i in 0 until arr.length()) {
                                 val t = arr.getJSONObject(i)
-                                saavnList.add(InternetSongData(t.optString("id", ""), t.optString("title", "").replace("&quot;", "\"").replace("&amp;", "&"), t.optJSONObject("primaryArtists")?.optString("name", "") ?: "", t.optJSONArray("image")?.optJSONObject(2)?.optString("link", "") ?: t.optString("image", "")))
+                                // FIXED: Checks both "name" and "title" explicitly to prevent missing text
+                                saavnList.add(InternetSongData(t.optString("id", ""), t.optString("name", t.optString("title", "")).replace("&quot;", "\"").replace("&amp;", "&"), t.optJSONObject("primaryArtists")?.optString("name", "") ?: "", t.optJSONArray("image")?.optJSONObject(2)?.optString("link", "") ?: t.optString("image", "")))
                             }
                             break 
                         }
@@ -665,7 +672,7 @@ suspend fun fetchLiveSearchResults(query: String, language: String, isPlaylistSe
                         if (arr != null) {
                             for (i in 0 until arr.length()) {
                                 val t = arr.getJSONObject(i); val info = t.optJSONObject("more_info")
-                                saavnList.add(InternetSongData(t.optString("id", ""), t.optString("title", "").replace("&quot;", "\"").replace("&amp;", "&"), info?.optString("singers", "") ?: info?.optString("primary_artists", "") ?: "", t.optString("image", "").replace("50x50.jpg", "500x500.jpg")))
+                                saavnList.add(InternetSongData(t.optString("id", ""), t.optString("title", t.optString("name", "")).replace("&quot;", "\"").replace("&amp;", "&"), info?.optString("singers", "") ?: info?.optString("primary_artists", "") ?: "", t.optString("image", "").replace("50x50.jpg", "500x500.jpg")))
                             }
                         }
                     }
