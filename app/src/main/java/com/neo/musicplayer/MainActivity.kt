@@ -90,6 +90,8 @@ fun MusicPlayerUI() {
     val recentlyPlayedMemories by db.getRecentlyPlayed().collectAsState(initial = emptyList())
     val customPlaylists by db.getAllPlaylists().collectAsState(initial = emptyList())
     
+    val sharedPrefs = remember { context.getSharedPreferences("NeoMusicPrefs", Context.MODE_PRIVATE) }
+    
     var localSongs by remember { mutableStateOf<List<LocalSong>>(emptyList()) }
     val favoriteSongs = remember(favoriteMemories, localSongs) { favoriteMemories.mapNotNull { mem -> if (mem.localMediaId >= 0) localSongs.find { it.id == mem.localMediaId } else LocalSong(mem.localMediaId, mem.fetchedTitle ?: mem.customTitle ?: "Unknown", mem.fetchedArtist ?: mem.customArtist ?: "Unknown", -1L, null, mem.fetchedArtUrl) } }
     val recentlyPlayedSongs = remember(recentlyPlayedMemories, localSongs) { recentlyPlayedMemories.mapNotNull { mem -> if (mem.localMediaId >= 0) localSongs.find { it.id == mem.localMediaId } else LocalSong(mem.localMediaId, mem.fetchedTitle ?: mem.customTitle ?: "Unknown", mem.fetchedArtist ?: mem.customArtist ?: "Unknown", -1L, null, mem.fetchedArtUrl) } }
@@ -102,24 +104,53 @@ fun MusicPlayerUI() {
     LaunchedEffect(viewingPlaylistId) { viewingPlaylistId?.let { id -> currentPlaylistData = db.getPlaylistWithSongs(id) } }
 
     val languages = listOf("All", "Tamil", "English", "Hindi", "Malayalam", "Telugu", "Kannada", "Marathi", "Bengali", "Punjabi", "Gujarati")
-    var selectedLanguage by remember { mutableStateOf("Tamil") } 
+    var selectedLanguage by remember { mutableStateOf(sharedPrefs.getString("saved_lang", "") ?: "") } 
     var isPlaylistMode by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        val detectedLang = getPrivacyMaskedLanguage()
-        if (languages.contains(detectedLang)) selectedLanguage = detectedLang
+        if (selectedLanguage.isBlank()) {
+            val detectedLang = getAutoLanguage()
+            selectedLanguage = if (languages.contains(detectedLang)) detectedLang else "Global"
+            sharedPrefs.edit().putString("saved_lang", selectedLanguage).apply()
+        }
     }
 
     var liveSearchResults by remember { mutableStateOf<List<InternetSongData>>(emptyList()) }; var isLiveSearching by remember { mutableStateOf(false) }
 
     LaunchedEffect(searchQuery, selectedLanguage, isPlaylistMode, isSearchActive) {
-        if (!isSearchActive) return@LaunchedEffect
+        if (!isSearchActive || selectedLanguage.isBlank()) return@LaunchedEffect
+        
+        if (searchQuery.isBlank()) {
+            val cachedJson = sharedPrefs.getString("ghost_cache_${selectedLanguage}_${isPlaylistMode}", null)
+            if (cachedJson != null) {
+                try {
+                    val arr = JSONArray(cachedJson); val ghostList = mutableListOf<InternetSongData>()
+                    for (i in 0 until arr.length()) { val obj = arr.getJSONObject(i); ghostList.add(InternetSongData(obj.optString("id"), obj.optString("title"), obj.optString("artist"), obj.optString("artUrl"), null)) }
+                    liveSearchResults = ghostList
+                } catch(e: Exception){}
+            }
+        }
+
         val q = if (searchQuery.isBlank()) {
             if (selectedLanguage == "All") "Top Hits" else "$selectedLanguage Hits"
         } else {
             if (selectedLanguage == "All") searchQuery else "$searchQuery $selectedLanguage"
         }
-        delay(400); isLiveSearching = true; liveSearchResults = fetchLiveSearchResults(q, selectedLanguage, isPlaylistMode); isLiveSearching = false
+        
+        delay(400); isLiveSearching = true
+        val freshData = fetchLiveSearchResults(q, selectedLanguage, isPlaylistMode)
+        
+        if (freshData.isNotEmpty()) {
+            liveSearchResults = freshData
+            if (searchQuery.isBlank()) {
+                try {
+                    val cacheArr = JSONArray()
+                    freshData.take(15).forEach { song -> val obj = JSONObject().apply { put("id", song.id); put("title", song.title); put("artist", song.artist); put("artUrl", song.artUrl) }; cacheArr.put(obj) }
+                    sharedPrefs.edit().putString("ghost_cache_${selectedLanguage}_${isPlaylistMode}", cacheArr.toString()).apply()
+                } catch(e: Exception){}
+            }
+        }
+        isLiveSearching = false
     }
 
     var currentSong by remember { mutableStateOf<LocalSong?>(null) }; var fetchedInternetData by remember { mutableStateOf<InternetSongData?>(null) } 
@@ -331,7 +362,15 @@ fun MusicPlayerUI() {
                         }
                         LazyRow(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             items(languages) { lang -> 
-                                FilterChip(selected = selectedLanguage == lang, onClick = { selectedLanguage = lang }, label = { Text(lang) }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))) 
+                                FilterChip(
+                                    selected = selectedLanguage == lang, 
+                                    onClick = { 
+                                        selectedLanguage = lang
+                                        sharedPrefs.edit().putString("saved_lang", lang).apply() 
+                                    }, 
+                                    label = { Text(lang) }, 
+                                    colors = FilterChipDefaults.filterChipColors(selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+                                ) 
                             }
                         }
                     }
@@ -561,32 +600,19 @@ fun fetchLocalMusic(context: Context): List<LocalSong> {
     return songs
 }
 
-// THE SPLIT-ROUTING ENGINE: Routes metadata through Tor SOCKS5, auto-falls back to direct network.
-private fun fetchHttp(urlStr: String, useTor: Boolean = true): String? {
+private fun fetchHttp(urlStr: String): String? {
     return try {
-        val proxy = if (useTor) java.net.Proxy(java.net.Proxy.Type.SOCKS, java.net.InetSocketAddress("127.0.0.1", 9050)) else java.net.Proxy.NO_PROXY
-        val conn = URL(urlStr).openConnection(proxy) as HttpURLConnection
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; rv:115.0) Gecko/20100101 Firefox/115.0")
-        conn.connectTimeout = 8000
-        conn.readTimeout = 8000
+        val conn = URL(urlStr).openConnection() as HttpURLConnection
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        conn.connectTimeout = 6000
+        conn.readTimeout = 6000
         if (conn.responseCode == 200) conn.inputStream.bufferedReader().readText() else null
-    } catch (e: Exception) {
-        if (useTor) fetchHttp(urlStr, false) else null 
-    }
+    } catch (e: Exception) { null }
 }
 
-// SUBNET BYPASS: Uses direct connection to fetch authentic location, then sets language.
-suspend fun getPrivacyMaskedLanguage(): String = withContext(Dispatchers.IO) {
+suspend fun getAutoLanguage(): String = withContext(Dispatchers.IO) {
     try {
-        var dummyIp = ""
-        val myIpRes = fetchHttp("https://api4.ipify.org", useTor = false) 
-        if (myIpRes != null && myIpRes.contains(".")) {
-            dummyIp = myIpRes.substringBeforeLast(".") + ".12" 
-        }
-        
-        val geoUrl = if (dummyIp.isNotBlank()) "https://ipwho.is/$dummyIp" else "https://ipwho.is/"
-        val res = fetchHttp(geoUrl, useTor = false)
-        
+        val res = fetchHttp("https://ipwho.is/")
         if (res != null) {
             val json = JSONObject(res)
             val country = json.optString("country", "")
