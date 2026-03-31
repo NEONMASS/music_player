@@ -134,10 +134,13 @@ fun MusicPlayerUI() {
     var isLiveSearching by remember { mutableStateOf(false) }
 
     LaunchedEffect(searchQuery, selectedLanguage, isPlaylistMode, isSearchActive) {
-        if (!isSearchActive || selectedLanguage.isBlank()) return@LaunchedEffect
+        if (!isSearchActive) return@LaunchedEffect
         
+        // FIX 1: Ignore selectedLanguage entirely if we are browsing Albums/Playlists
+        val activeLang = if (isPlaylistMode) "All" else selectedLanguage
+
         if (searchQuery.isBlank()) {
-            val cachedJson = sharedPrefs.getString("ghost_cache_${selectedLanguage}_${isPlaylistMode}", null)
+            val cachedJson = sharedPrefs.getString("ghost_cache_${activeLang}_${isPlaylistMode}", null)
             if (cachedJson != null) {
                 try {
                     val arr = JSONArray(cachedJson)
@@ -151,11 +154,17 @@ fun MusicPlayerUI() {
             }
         }
 
-        val q = if (searchQuery.isBlank()) { if (selectedLanguage == "All") "Top Hits" else "$selectedLanguage Hits" } else { if (selectedLanguage == "All") searchQuery else "$searchQuery $selectedLanguage" }
+        val q = if (searchQuery.isBlank()) { 
+            if (activeLang == "All" || activeLang.isBlank()) "Top Hits" else "$activeLang Hits" 
+        } else { 
+            if (activeLang == "All" || activeLang.isBlank()) searchQuery else "$searchQuery $activeLang" 
+        }
         
         delay(400)
         isLiveSearching = true
-        val freshData = fetchLiveSearchResults(q, selectedLanguage, isPlaylistMode)
+        
+        // FIX 2: Pass raw searchQuery so Archive doesn't get polluted by "Tamil Hits"
+        val freshData = fetchLiveSearchResults(q, searchQuery, isPlaylistMode)
         
         if (freshData.isNotEmpty()) {
             liveSearchResults = freshData
@@ -166,7 +175,7 @@ fun MusicPlayerUI() {
                         val obj = JSONObject().apply { put("id", song.id); put("title", song.title); put("artist", song.artist); put("artUrl", song.artUrl) }
                         cacheArr.put(obj) 
                     }
-                    sharedPrefs.edit().putString("ghost_cache_${selectedLanguage}_${isPlaylistMode}", cacheArr.toString()).apply()
+                    sharedPrefs.edit().putString("ghost_cache_${activeLang}_${isPlaylistMode}", cacheArr.toString()).apply()
                 } catch(e: Exception){}
             }
         }
@@ -326,7 +335,7 @@ fun MusicPlayerUI() {
                             val cSong = currentSong
                             if (cSong != null) {
                                 val recQuery = "${cSong.artist} Hits"
-                                val recs = fetchLiveSearchResults(recQuery, selectedLanguage, false)
+                                val recs = fetchLiveSearchResults(recQuery, recQuery, false)
                                 if (recs.isNotEmpty()) { 
                                     val nextSong = recs[0]
                                     withContext(Dispatchers.Main) { 
@@ -407,7 +416,7 @@ fun MusicPlayerUI() {
                 TopAppBar(
                     title = { 
                         if (isSearchActive) { 
-                            TextField(value = searchQuery, onValueChange = { searchQuery = it }, placeholder = { Text("Search ${if (selectedLanguage == "All") "Global" else selectedLanguage}...") }, singleLine = true, colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent)) 
+                            TextField(value = searchQuery, onValueChange = { searchQuery = it }, placeholder = { Text("Search...") }, singleLine = true, colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent)) 
                         } else { 
                             Text(when(currentTab) { 0 -> "Dashboard"; 1 -> "Discover"; 2 -> "My Library"; else -> "All Songs" }, fontWeight = FontWeight.Bold) 
                         } 
@@ -627,7 +636,7 @@ fun MusicPlayerUI() {
                     isPlaying = isPlaying, 
                     currentPosition = currentPosition, 
                     totalDuration = totalDuration, 
-                    isFavorite = memoryMap[currentSong?.id]?.isFavorite == true, 
+                    isFavorite = memoryMap[currentSong?.id ?: -1L]?.isFavorite == true, 
                     queueList = playQueue, 
                     memoryMap = memoryMap, 
                     playSong = { qSong -> 
@@ -663,7 +672,7 @@ fun MusicPlayerUI() {
                     }, 
                     onToggleFavorite = { 
                         coroutineScope.launch { 
-                            db.updateFavoriteStatus(currentSong!!.id, !(memoryMap[currentSong!!.id]?.isFavorite ?: false)) 
+                            db.updateFavoriteStatus(currentSong!!.id, !(memoryMap[currentSong!!.id ?: -1L]?.isFavorite ?: false)) 
                         } 
                     }, 
                     isLive = isLive, 
@@ -899,12 +908,12 @@ fun fetchLocalMusic(context: Context): List<LocalSong> {
     return songs
 }
 
-private fun fetchHttp(urlStr: String): String? {
+private fun fetchHttp(urlStr: String, timeoutMs: Int = 6000): String? {
     return try {
         val conn = URL(urlStr).openConnection() as HttpURLConnection
         conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-        conn.connectTimeout = 6000
-        conn.readTimeout = 6000
+        conn.connectTimeout = timeoutMs
+        conn.readTimeout = timeoutMs
         if (conn.responseCode == 200) conn.inputStream.bufferedReader().readText() else null
     } catch (e: Exception) { null }
 }
@@ -924,78 +933,72 @@ suspend fun getAutoLanguage(): String = withContext(Dispatchers.IO) {
     return@withContext "All" 
 }
 
-suspend fun fetchLiveSearchResults(query: String, language: String, isPlaylistSearch: Boolean): List<InternetSongData> = coroutineScope {
+suspend fun fetchLiveSearchResults(query: String, rawQuery: String, isPlaylistSearch: Boolean): List<InternetSongData> = coroutineScope {
     val qEnc = URLEncoder.encode(query, "UTF-8")
     
     val saavnTask = async<List<InternetSongData>>(Dispatchers.IO) {
-        val list = mutableListOf<InternetSongData>()
-        if (!isPlaylistSearch) {
-            val apis = listOf("https://saavn.dev/api/search/songs?query=", "https://saavn.sumit.co/api/search/songs?query=")
-            for (api in apis) {
+        if (isPlaylistSearch) return@async emptyList()
+        val apis = listOf("https://saavn.dev/api/search/songs?query=", "https://saavn.sumit.co/api/search/songs?query=")
+        val defs = apis.map { api ->
+            async {
                 try {
-                    val res = fetchHttp("$api$qEnc")
-                    if (res != null) {
-                        val arr = JSONObject(res).optJSONObject("data")?.optJSONArray("results")
-                        if (arr != null) { 
-                            for (i in 0 until arr.length()) { 
-                                val t = arr.getJSONObject(i)
-                                list.add(InternetSongData(t.optString("id"), t.optString("name", t.optString("title")).replace("&quot;", "\""), t.optJSONArray("primaryArtists")?.optJSONObject(0)?.optString("name") ?: "", t.optJSONArray("image")?.optJSONObject(2)?.optString("link") ?: "")) 
-                            }
-                            break 
-                        }
+                    val res = fetchHttp("$api$qEnc", 3000) ?: return@async emptyList<InternetSongData>()
+                    val arr = JSONObject(res).optJSONObject("data")?.optJSONArray("results") ?: return@async emptyList<InternetSongData>()
+                    val list = mutableListOf<InternetSongData>()
+                    for (i in 0 until arr.length()) { 
+                        val t = arr.getJSONObject(i)
+                        list.add(InternetSongData(t.optString("id"), t.optString("name", t.optString("title")).replace("&quot;", "\""), t.optJSONArray("primaryArtists")?.optJSONObject(0)?.optString("name") ?: "", t.optJSONArray("image")?.optJSONObject(2)?.optString("link") ?: "")) 
                     }
-                } catch(e: Exception){}
+                    list
+                } catch(e: Exception){ emptyList<InternetSongData>() }
             }
         }
-        return@async list
+        defs.awaitAll().firstOrNull { it.isNotEmpty() } ?: emptyList()
     }
     
     val archiveTask = async<List<InternetSongData>>(Dispatchers.IO) {
-        val list = mutableListOf<InternetSongData>()
-        if (isPlaylistSearch) {
-            try {
-                val qBase = if (query.isBlank()) "subject:\"anime\" OR subject:\"soundtrack\"" else "($query)"
-                val exact = "$qBase AND mediatype:audio AND (subject:\"ost\" OR subject:\"music\" OR subject:\"soundtrack\") AND NOT subject:\"news\" AND NOT subject:\"podcast\" AND NOT subject:\"ep\" AND NOT subject:\"broadcast\" AND NOT creator:\"voa\""
-                val res = fetchHttp("https://archive.org/advancedsearch.php?q=${URLEncoder.encode(exact, "UTF-8")}&fl[]=identifier,title,creator&rows=15&output=json")
-                if (res != null) {
-                    val docs = JSONObject(res).optJSONObject("response")?.optJSONArray("docs")
-                    if (docs != null) { 
-                        for (i in 0 until docs.length()) { 
-                            val t = docs.getJSONObject(i)
-                            val id = t.optString("identifier")
-                            if (id.isNotBlank()) list.add(InternetSongData("ia:$id", t.optString("title"), "[Album] ${t.optString("creator")}", "https://archive.org/services/img/$id")) 
-                        } 
-                    }
+        if (!isPlaylistSearch) return@async emptyList()
+        try {
+            val qBase = if (rawQuery.isBlank()) "(subject:\"music\" OR subject:\"soundtrack\" OR subject:\"ost\")" else "($rawQuery)"
+            val exact = "$qBase AND mediatype:audio AND NOT subject:\"news\" AND NOT subject:\"podcast\" AND NOT subject:\"ep\" AND NOT subject:\"broadcast\" AND NOT subject:\"talk\" AND NOT creator:\"voa\""
+            val res = fetchHttp("https://archive.org/advancedsearch.php?q=${URLEncoder.encode(exact, "UTF-8")}&fl[]=identifier,title,creator&rows=15&output=json", 5000)
+            if (res != null) {
+                val docs = JSONObject(res).optJSONObject("response")?.optJSONArray("docs")
+                val list = mutableListOf<InternetSongData>()
+                if (docs != null) { 
+                    for (i in 0 until docs.length()) { 
+                        val t = docs.getJSONObject(i)
+                        val id = t.optString("identifier")
+                        if (id.isNotBlank()) list.add(InternetSongData("ia:$id", t.optString("title"), "[Album] ${t.optString("creator")}", "https://archive.org/services/img/$id")) 
+                    } 
                 }
-            } catch(e: Exception){}
-        }
-        return@async list
+                return@async list
+            }
+        } catch(e: Exception){}
+        emptyList()
     }
     
     val pipedTask = async<List<InternetSongData>>(Dispatchers.IO) {
-        val list = mutableListOf<InternetSongData>()
-        if (!isPlaylistSearch) {
-            val instances = listOf("pipedapi.kavin.rocks", "pipedapi.tokhmi.xyz", "piped.projectsegfau.lt", "pipedapi.smnz.de")
-            for (instance in instances) {
+        if (isPlaylistSearch) return@async emptyList()
+        val instances = listOf("pipedapi.kavin.rocks", "pipedapi.tokhmi.xyz", "piped.projectsegfau.lt", "pipedapi.smnz.de")
+        val defs = instances.map { instance ->
+            async {
                 try {
-                    val res = fetchHttp("https://$instance/search?q=$qEnc&filter=music_songs")
-                    if (res != null) { 
-                        val items = JSONObject(res).optJSONArray("items")
-                        if (items != null) { 
-                            for (i in 0 until minOf(items.length(), 10)) { 
-                                val t = items.getJSONObject(i)
-                                if (t.optString("type") == "stream") { 
-                                    val vid = t.optString("url").replace("/watch?v=", "").substringBefore("&")
-                                    if (vid.isNotBlank()) list.add(InternetSongData("yt:$vid", t.optString("title"), t.optString("uploaderName"), t.optString("thumbnail"))) 
-                                } 
-                            }
-                            break 
+                    val res = fetchHttp("https://$instance/search?q=$qEnc&filter=music_songs", 4000) ?: return@async emptyList<InternetSongData>()
+                    val items = JSONObject(res).optJSONArray("items") ?: return@async emptyList<InternetSongData>()
+                    val list = mutableListOf<InternetSongData>()
+                    for (i in 0 until minOf(items.length(), 15)) { 
+                        val t = items.getJSONObject(i)
+                        if (t.optString("type") == "stream") { 
+                            val vid = t.optString("url").replace("/watch?v=", "").substringBefore("&")
+                            if (vid.isNotBlank()) list.add(InternetSongData("yt:$vid", t.optString("title"), t.optString("uploaderName"), t.optString("thumbnail"))) 
                         } 
                     }
-                } catch(e: Exception){}
+                    list
+                } catch(e: Exception){ emptyList<InternetSongData>() }
             }
         }
-        return@async list
+        defs.awaitAll().firstOrNull { it.isNotEmpty() } ?: emptyList()
     }
     
     val combined = mutableListOf<InternetSongData>()
@@ -1011,7 +1014,7 @@ suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = 
         val apis = listOf("https://saavn.dev/api/songs?ids=", "https://saavn.sumit.co/api/songs?ids=")
         for (api in apis) {
             try {
-                val res = fetchHttp("$api$songId")
+                val res = fetchHttp("$api$songId", 4000)
                 if (res != null) {
                     val data = JSONObject(res).optJSONArray("data")
                     if (data != null && data.length() > 0) {
@@ -1025,10 +1028,10 @@ suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = 
     if (songId.startsWith("yt:")) {
         val vid = songId.removePrefix("yt:")
         val instances = listOf("pipedapi.kavin.rocks", "pipedapi.tokhmi.xyz", "piped.projectsegfau.lt", "pipedapi.smnz.de")
-        for (inst in instances) {
-            try {
-                val res = fetchHttp("https://$inst/streams/$vid")
-                if (res != null) { 
+        val defs = instances.map { inst ->
+            async {
+                try {
+                    val res = fetchHttp("https://$inst/streams/$vid", 4000) ?: return@async null
                     val streams = JSONObject(res).optJSONArray("audioStreams")
                     var bestUrl: String? = null
                     var highestBitrate = 0
@@ -1046,10 +1049,11 @@ suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = 
                             } 
                         } 
                     }
-                    if (bestUrl != null) return@withContext bestUrl 
-                }
-            } catch(e: Exception){}
+                    bestUrl
+                } catch(e: Exception){ null }
+            }
         }
+        return@withContext defs.awaitAll().firstOrNull { it != null }
     }
     return@withContext null
 }
@@ -1059,7 +1063,7 @@ suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSon
     
     val t1 = async<InternetSongData?>(Dispatchers.IO) { 
         try {
-            val res = fetchHttp("https://itunes.apple.com/search?term=${URLEncoder.encode("$cleanTitle $artist", "UTF-8")}&limit=1")
+            val res = fetchHttp("https://itunes.apple.com/search?term=${URLEncoder.encode("$cleanTitle $artist", "UTF-8")}&limit=1", 4000)
             if (res != null) {
                 val results = JSONObject(res).optJSONArray("results")
                 if (results != null && results.length() > 0) {
@@ -1073,7 +1077,7 @@ suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSon
     
     val t2 = async<InternetSongData?>(Dispatchers.IO) { 
         try {
-            val res = fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&query=${URLEncoder.encode("$cleanTitle $artist", "UTF-8")}")
+            val res = fetchHttp("https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&query=${URLEncoder.encode("$cleanTitle $artist", "UTF-8")}", 4000)
             if (res != null) {
                 val songs = JSONObject(res).optJSONObject("songs")?.optJSONArray("data")
                 if (songs != null && songs.length() > 0) {
@@ -1094,7 +1098,7 @@ suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSon
 
 private fun searchLyricsAPI(title: String, artist: String): String? {
     try {
-        val res = fetchHttp("https://lrclib.net/api/search?q=${URLEncoder.encode("$title $artist", "UTF-8")}") ?: return null
+        val res = fetchHttp("https://lrclib.net/api/search?q=${URLEncoder.encode("$title $artist", "UTF-8")}", 4000) ?: return null
         val arr = JSONArray(res)
         if (arr.length() > 0) return arr.getJSONObject(0).optString("plainLyrics")
     } catch(e: Exception) {}
