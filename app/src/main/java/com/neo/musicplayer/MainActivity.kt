@@ -239,7 +239,7 @@ fun MusicPlayerUI() {
                                 for (f in sortedTracks) {
                                     val trackTitle = f.optString("title").takeIf { it.isNotBlank() } ?: f.optString("name").substringBeforeLast(".")
                                     val trackArtist = f.optString("creator").takeIf { it.isNotBlank() } ?: webSongData.artist.replace("[Album] ", "")
-                                    val dummyId = -(kotlin.math.abs((trackTitle + trackArtist).hashCode().toLong())).let { if(it==0L) -1L else it }
+                                    val dummyId = generateDummyId(trackTitle, trackArtist)
                                     list.add(LocalSong(dummyId, trackTitle, trackArtist, -1L, "https://archive.org/download/$id/${Uri.encode(f.optString("name"))}", "${webSongData.artUrl}|||ia:$id"))
                                 }
                             }
@@ -249,7 +249,7 @@ fun MusicPlayerUI() {
                 }
                 
                 if (iaPlaylist.isNotEmpty()) {
-                    val parentId = -(kotlin.math.abs((webSongData.title + webSongData.artist).hashCode().toLong())).let { if(it==0L) -1L else it }
+                    val parentId = generateDummyId(webSongData.title, webSongData.artist)
                     withContext(Dispatchers.IO) { 
                         db.saveSongMemory(SongEntity(parentId, webSongData.title, webSongData.artist, webSongData.title, webSongData.artist, "${webSongData.artUrl}|||${webSongData.id}", null, memoryMap[parentId]?.isFavorite ?: false, System.currentTimeMillis())) 
                     }
@@ -270,7 +270,7 @@ fun MusicPlayerUI() {
             
             val streamUrl = fetchAudioStreamUrl(webSongData.title, webSongData.artist, webSongData.id)
             if (streamUrl != null) {
-                val dummyId = -(kotlin.math.abs((webSongData.title + webSongData.artist).hashCode().toLong())).let { if(it==0L) -1L else it }
+                val dummyId = generateDummyId(webSongData.title, webSongData.artist)
                 val dummySong = LocalSong(dummyId, webSongData.title, webSongData.artist, -1L, streamUrl, "${webSongData.artUrl}|||${webSongData.id}")
                 
                 withContext(Dispatchers.IO) { 
@@ -383,7 +383,6 @@ fun MusicPlayerUI() {
         } 
     }
     
-    // COMPOSABLE COMPLIANT LAUNCHER
     var permissionGranted by remember { mutableStateOf(false) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted -> 
         permissionGranted = isGranted
@@ -458,7 +457,23 @@ fun MusicPlayerUI() {
                     } else {
                         LazyColumn(modifier = Modifier.fillMaxSize()) {
                             items(liveSearchResults) { song -> 
-                                TrackRow(songId = -1L, title = song.title, artist = song.artist, artUrl = song.artUrl, isPlaying = false, onClick = { autoPlayContext = liveSearchResults; autoPlayIndex = liveSearchResults.indexOf(song); playWebSong(song) }, onLongClick = { selectedSongForAction = LocalSong(-(kotlin.math.abs((song.title + song.artist).hashCode().toLong())).takeIf{it!=0L}?:-1L, song.title, song.artist, -1L, null, "${song.artUrl}|||${song.id}"); fetchedInternetData = song }) 
+                                TrackRow(
+                                    songId = -1L, 
+                                    title = song.title, 
+                                    artist = song.artist, 
+                                    artUrl = song.artUrl, 
+                                    isPlaying = false, 
+                                    onClick = { 
+                                        autoPlayContext = liveSearchResults
+                                        autoPlayIndex = liveSearchResults.indexOf(song)
+                                        playWebSong(song) 
+                                    }, 
+                                    onLongClick = { 
+                                        val cId = generateDummyId(song.title, song.artist)
+                                        selectedSongForAction = LocalSong(cId, song.title, song.artist, -1L, null, "${song.artUrl}|||${song.id}")
+                                        fetchedInternetData = song 
+                                    }
+                                ) 
                             }
                         }
                     }
@@ -612,7 +627,7 @@ fun MusicPlayerUI() {
                     isPlaying = isPlaying, 
                     currentPosition = currentPosition, 
                     totalDuration = totalDuration, 
-                    isFavorite = memoryMap[currentSong?.id ?: -1L]?.isFavorite == true, 
+                    isFavorite = memoryMap[currentSong?.id]?.isFavorite == true, 
                     queueList = playQueue, 
                     memoryMap = memoryMap, 
                     playSong = { qSong -> 
@@ -648,7 +663,7 @@ fun MusicPlayerUI() {
                     }, 
                     onToggleFavorite = { 
                         coroutineScope.launch { 
-                            db.updateFavoriteStatus(currentSong!!.id, !(memoryMap[currentSong!!.id ?: -1L]?.isFavorite ?: false)) 
+                            db.updateFavoriteStatus(currentSong!!.id, !(memoryMap[currentSong!!.id]?.isFavorite ?: false)) 
                         } 
                     }, 
                     isLive = isLive, 
@@ -860,6 +875,11 @@ fun PlayerControlsBar(currentSong: LocalSong, internetData: InternetSongData?, i
     }
 }
 
+fun generateDummyId(title: String, artist: String): Long {
+    val h = kotlin.math.abs((title + artist).hashCode().toLong())
+    return if (h == 0L) -1L else -h
+}
+
 fun fetchLocalMusic(context: Context): List<LocalSong> {
     val songs = mutableListOf<LocalSong>()
     val uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
@@ -919,7 +939,7 @@ suspend fun fetchLiveSearchResults(query: String, language: String, isPlaylistSe
                         if (arr != null) { 
                             for (i in 0 until arr.length()) { 
                                 val t = arr.getJSONObject(i)
-                                list.add(InternetSongData(t.optString("id"), t.optString("name", t.optString("title")).replace("&quot;", "\""), t.optJSONObject("primaryArtists")?.optString("name") ?: "", t.optJSONArray("image")?.optJSONObject(2)?.optString("link") ?: "")) 
+                                list.add(InternetSongData(t.optString("id"), t.optString("name", t.optString("title")).replace("&quot;", "\""), t.optJSONArray("primaryArtists")?.optJSONObject(0)?.optString("name") ?: "", t.optJSONArray("image")?.optJSONObject(2)?.optString("link") ?: "")) 
                             }
                             break 
                         }
