@@ -38,6 +38,12 @@ import kotlinx.coroutines.*
 import org.json.*
 import java.net.*
 
+// --- IN-MEMORY CACHE SYSTEM ---
+object AppCache {
+    val searchResults = mutableMapOf<String, List<InternetSongData>>()
+    val streamUrls = mutableMapOf<String, String>()
+}
+
 // MINIMALIST MONOCHROME THEME
 private val MinBgDark = Color(0xFF0A0A0A)
 private val MinSurfaceDark = Color(0xFF141414)
@@ -55,9 +61,8 @@ fun AestheticTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = colorScheme, content = content)
 }
 
-// FIXED: Renamed from BlueWhiteFallback to FallbackIcon to match the UI calls
 @Composable
-fun FallbackIcon(iconSize: Dp = 48.dp, modifier: Modifier = Modifier) {
+fun FallbackIcon(modifier: Modifier = Modifier, iconSize: Dp = 48.dp) {
     Box(modifier = modifier.background(Color.Gray.copy(alpha = 0.2f)), contentAlignment = Alignment.Center) { 
         Icon(Icons.Default.MusicNote, contentDescription = "Music", tint = Color.Gray.copy(alpha = 0.6f), modifier = Modifier.size(iconSize)) 
     }
@@ -102,7 +107,7 @@ fun MiniPlayer(s: LocalSong, w: InternetSongData?, isP: Boolean, pos: Long, dur:
         Column {
             LinearProgressIndicator(progress = { if (dur > 0) (pos.toFloat()/dur).coerceIn(0f,1f) else 0f }, modifier = Modifier.fillMaxWidth().height(2.dp), color = MaterialTheme.colorScheme.onSurface, trackColor = Color.Transparent)
             Row(modifier = Modifier.padding(12.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(img).crossfade(true).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(44.dp).clip(RoundedCornerShape(8.dp)), error = { FallbackIcon(20.dp) })
+                SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(img).crossfade(true).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(44.dp).clip(RoundedCornerShape(8.dp)), error = { FallbackIcon(modifier = Modifier.size(20.dp)) })
                 Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) { 
                     Text(t, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(a, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), maxLines = 1, overflow = TextOverflow.Ellipsis) 
@@ -117,9 +122,9 @@ fun MiniPlayer(s: LocalSong, w: InternetSongData?, isP: Boolean, pos: Long, dur:
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MusicPlayerUI() {
-    val ctx = LocalContext.current
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    val db = remember { AppDatabase.getDatabase(ctx).libraryDao() }
+    val db = remember { AppDatabase.getDatabase(context).libraryDao() }
     
     val songMemories by db.getAllSongMemories().collectAsState(initial = emptyList())
     val memoryMap = remember(songMemories) { songMemories.associateBy { it.localMediaId } }
@@ -127,7 +132,7 @@ fun MusicPlayerUI() {
     val recentlyPlayedMemories by db.getRecentlyPlayed().collectAsState(initial = emptyList())
     val customPlaylists by db.getAllPlaylists().collectAsState(initial = emptyList())
     
-    val sharedPrefs = remember { ctx.getSharedPreferences("NeoMusicPrefs", Context.MODE_PRIVATE) }
+    val sharedPrefs = remember { context.getSharedPreferences("NeoMusicPrefs", Context.MODE_PRIVATE) }
     
     var localSongs by remember { mutableStateOf<List<LocalSong>>(emptyList()) }
     val favoriteSongs = remember(favoriteMemories, localSongs) { favoriteMemories.mapNotNull { mem -> if (mem.localMediaId >= 0) localSongs.find { it.id == mem.localMediaId } else LocalSong(mem.localMediaId, mem.fetchedTitle ?: mem.customTitle ?: "Unknown", mem.fetchedArtist ?: mem.customArtist ?: "Unknown", -1L, null, mem.fetchedArtUrl) } }
@@ -161,28 +166,19 @@ fun MusicPlayerUI() {
         if (!isSearchActive) return@LaunchedEffect
         
         val activeLang = if (isPlaylistMode) "All" else selectedLanguage
-
-        if (searchQuery.isBlank()) {
-            val cachedJson = sharedPrefs.getString("ghost_cache_${activeLang}_${isPlaylistMode}", null)
-            if (cachedJson != null) {
-                try {
-                    val arr = JSONArray(cachedJson)
-                    val ghostList = mutableListOf<InternetSongData>()
-                    for (i in 0 until arr.length()) { 
-                        val obj = arr.getJSONObject(i)
-                        ghostList.add(InternetSongData(obj.optString("id"), obj.optString("title"), obj.optString("artist"), obj.optString("artUrl"), null)) 
-                    }
-                    liveSearchResults = ghostList
-                } catch(e: Exception){}
-            }
-        }
-
         val q = if (searchQuery.isBlank()) { 
-            if (activeLang == "All" || activeLang.isBlank()) "Top Hits" else "$activeLang Hits" 
+            if (activeLang == "All" || activeLang.isBlank()) "Top Songs" else "$activeLang Trending Songs" 
         } else { 
             if (activeLang == "All" || activeLang.isBlank()) searchQuery else "$searchQuery $activeLang" 
         }
         
+        val cacheKey = "${q}_${isPlaylistMode}"
+        if (AppCache.searchResults.containsKey(cacheKey)) {
+            liveSearchResults = AppCache.searchResults[cacheKey]!!
+            isLiveSearching = false
+            return@LaunchedEffect
+        }
+
         delay(400)
         isLiveSearching = true
         
@@ -190,16 +186,7 @@ fun MusicPlayerUI() {
         
         if (freshData.isNotEmpty()) {
             liveSearchResults = freshData
-            if (searchQuery.isBlank()) {
-                try {
-                    val cacheArr = JSONArray()
-                    freshData.take(15).forEach { song -> 
-                        val obj = JSONObject().apply { put("id", song.id); put("title", song.title); put("artist", song.artist); put("artUrl", song.artUrl) }
-                        cacheArr.put(obj) 
-                    }
-                    sharedPrefs.edit().putString("ghost_cache_${activeLang}_${isPlaylistMode}", cacheArr.toString()).apply()
-                } catch(e: Exception){}
-            }
+            AppCache.searchResults[cacheKey] = freshData
         }
         isLiveSearching = false
     }
@@ -221,7 +208,7 @@ fun MusicPlayerUI() {
 
     val exoPlayer = remember {
         val httpDataSourceFactory = DefaultHttpDataSource.Factory().setUserAgent("Mozilla/5.0").setAllowCrossProtocolRedirects(true)
-        ExoPlayer.Builder(ctx).setMediaSourceFactory(DefaultMediaSourceFactory(ctx).setDataSourceFactory(DefaultDataSource.Factory(ctx, httpDataSourceFactory))).build().apply {
+        ExoPlayer.Builder(context).setMediaSourceFactory(DefaultMediaSourceFactory(context).setDataSourceFactory(DefaultDataSource.Factory(context, httpDataSourceFactory))).build().apply {
             setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true)
             setHandleAudioBecomingNoisy(true)
             repeatMode = Player.REPEAT_MODE_OFF 
@@ -317,6 +304,7 @@ fun MusicPlayerUI() {
                 exoPlayer.play()
                 showFullScreenPlayer = true
             } else { 
+                Toast.makeText(context, "Failed to load stream.", Toast.LENGTH_SHORT).show()
                 if (autoPlayContext.isNotEmpty() && autoPlayIndex in 0 until autoPlayContext.size - 1) { 
                     autoPlayIndex++
                     playWebSong(autoPlayContext[autoPlayIndex]) 
@@ -354,13 +342,13 @@ fun MusicPlayerUI() {
                     playQueue = playQueue + ns
                     exoPlayer.addMediaItem(MediaItem.fromUri(url))
                     if (!isPlaying && exoPlayer.mediaItemCount == 1) { exoPlayer.prepare(); exoPlayer.play() }
-                    Toast.makeText(ctx, "Added to Queue", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Added to Queue", Toast.LENGTH_SHORT).show()
                 }
             } else {
                 playQueue = playQueue + s
                 exoPlayer.addMediaItem(MediaItem.fromUri(s.albumArtUri))
                 if (!isPlaying && exoPlayer.mediaItemCount == 1) { exoPlayer.prepare(); exoPlayer.play() }
-                Toast.makeText(ctx, "Added to Queue", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Added to Queue", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -381,7 +369,7 @@ fun MusicPlayerUI() {
                                 val recs = fetchLiveSearchResults(recQuery, recQuery, false)
                                 if (recs.isNotEmpty()) { 
                                     val nextSong = recs[0]
-                                    withContext(Dispatchers.Main) { Toast.makeText(ctx, "Up next: ${nextSong.title}", Toast.LENGTH_LONG).show() }
+                                    withContext(Dispatchers.Main) { Toast.makeText(context, "Up next: ${nextSong.title}", Toast.LENGTH_LONG).show() }
                                     autoPlayContext = recs
                                     autoPlayIndex = 0
                                     playWebSong(nextSong) 
@@ -438,8 +426,7 @@ fun MusicPlayerUI() {
     var permissionGranted by remember { mutableStateOf(false) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted -> 
         permissionGranted = isGranted
-        // FIXED: Call getLocalMusic using the correct function name
-        if (isGranted) localSongs = getLocalMusic(ctx)
+        if (isGranted) localSongs = fetchLocalMusic(context)
     }
     
     LaunchedEffect(Unit) { 
@@ -682,57 +669,87 @@ fun MusicPlayerUI() {
         
         AnimatedVisibility(visible = showFullScreenPlayer && currentSong != null, enter = slideInVertically(initialOffsetY = { it }), exit = slideOutVertically(targetOffsetY = { it })) {
             if (currentSong != null) {
-                FullScreenPlayer(
-                    song = currentSong!!, 
-                    internetData = fetchedInternetData, 
-                    isPlaying = isPlaying, 
-                    currentPosition = currentPosition, 
-                    totalDuration = totalDuration, 
-                    isFavorite = memoryMap[currentSong?.id ?: -1L]?.isFavorite == true, 
-                    queueList = playQueue, 
-                    memoryMap = memoryMap, 
-                    playSong = { qSong -> 
-                        if (qSong.id < 0 && qSong.webStreamUrl == null) {
-                            playWebSong(InternetSongData(qSong.customArtUrl?.substringAfter("|||", "") ?: "", qSong.title, qSong.artist, qSong.customArtUrl?.substringBefore("|||") ?: "")) 
-                        } else { 
-                            val idx = playQueue.indexOf(qSong)
-                            exoPlayer.seekTo(idx, 0L)
-                            exoPlayer.play() 
-                        } 
-                    }, 
-                    onRemoveFromQueue = { idx -> 
-                        if (idx in playQueue.indices) { 
-                            playQueue = playQueue.toMutableList().apply { removeAt(idx) }
-                            try { exoPlayer.removeMediaItem(idx) } catch(e: Exception){}
-                            if (exoPlayer.mediaItemCount == 0) { 
-                                exoPlayer.stop()
-                                isPlaying = false
-                                showFullScreenPlayer = false
-                                currentSong = null 
-                            } 
-                        } 
-                    }, 
-                    onClose = { showFullScreenPlayer = false }, 
-                    onPlayPause = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }, 
-                    onNext = { handleNext() }, 
-                    onPrev = { handlePrev() }, 
-                    onSeek = { percentage -> 
-                        if(!isLiveStream) { 
-                            exoPlayer.seekTo((percentage * totalDuration).toLong())
-                            currentPosition = (percentage * totalDuration).toLong() 
-                        } 
-                    }, 
-                    onToggleFavorite = { 
-                        coroutineScope.launch { 
-                            db.updateFavoriteStatus(currentSong!!.id, !(memoryMap[currentSong!!.id ?: -1L]?.isFavorite ?: false)) 
-                        } 
-                    }, 
-                    isLive = isLiveStream, 
-                    progress = if (!isLiveStream && totalDuration > 0) (currentPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f) else 0f
-                )
+                var sL by remember { mutableStateOf(false) }
+                var sQ by remember { mutableStateOf(false) }
+                val dTitle = fetchedInternetData?.title ?: currentSong!!.title
+                val dArtist = fetchedInternetData?.artist ?: currentSong!!.artist
+                val dArt = fetchedInternetData?.artUrl?.substringBefore("|||") ?: currentSong!!.customArtUrl?.substringBefore("|||") ?: currentSong!!.albumArtUri.toString()
+
+                Box(modifier = Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}) {
+                    SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(dArt).crossfade(1000).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().blur(60.dp), error = { Box(Modifier.fillMaxSize().background(Color.DarkGray)) })
+                    Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.2f), Color.Black.copy(alpha = 0.9f), Color.Black), 0f, 2000f)))
+                    
+                    Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { showFullScreenPlayer = false }) { Icon(Icons.Default.KeyboardArrowDown, null, modifier = Modifier.size(36.dp), tint = Color.White) }
+                            Row {
+                                IconButton(onClick = { sQ = !sQ; if(sQ) sL = false }) { Icon(if (sQ) Icons.Default.QueueMusic else Icons.Default.FormatListBulleted, null, tint = Color.White) }
+                                if (fetchedInternetData?.lyrics != null) {
+                                    IconButton(onClick = { sL = !sL; if(sL) sQ = false }) { Icon(if (sL) Icons.Default.MusicNote else Icons.Default.Subject, null, tint = Color.White) }
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.weight(1f))
+                        
+                        if (sQ) {
+                            Column(modifier = Modifier.fillMaxWidth().height(400.dp).background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(12.dp)).padding(8.dp)) {
+                                Text("Up Next", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.padding(8.dp))
+                                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                                    itemsIndexed(playQueue) { i, qs ->
+                                        val m = memoryMap[qs.id]
+                                        Row(modifier = Modifier.fillMaxWidth().clickable { 
+                                            if (qs.id < 0 && qs.webStreamUrl == null) playWebSong(InternetSongData(qs.customArtUrl?.substringAfter("|||") ?: "", qs.title, qs.artist, qs.customArtUrl?.substringBefore("|||") ?: "")) 
+                                            else { exoPlayer.seekTo(i, 0L); exoPlayer.play() } 
+                                        }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(if (qs.id == currentSong!!.id) Icons.Default.PlayArrow else Icons.Default.MusicNote, null, tint = Color.White, modifier = Modifier.size(20.dp))
+                                            Text(m?.customTitle ?: qs.title, color = Color.White, modifier = Modifier.weight(1f).padding(horizontal = 12.dp), maxLines = 1)
+                                            IconButton(onClick = { 
+                                                val nQ = playQueue.toMutableList(); nQ.removeAt(i); playQueue = nQ
+                                                try { exoPlayer.removeMediaItem(i) } catch(e: Exception){}
+                                                if (exoPlayer.mediaItemCount == 0) { exoPlayer.stop(); isPlaying = false; showFullScreenPlayer = false; currentSong = null } 
+                                            }) { Icon(Icons.Default.Close, null, tint = Color.White.copy(alpha = 0.5f)) }
+                                        }
+                                    }
+                                }
+                            }
+                        } else if (sL && fetchedInternetData?.lyrics != null) {
+                            Text(text = fetchedInternetData!!.lyrics!!, style = MaterialTheme.typography.titleMedium.copy(lineHeight = 28.sp), color = Color.White, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().height(400.dp).verticalScroll(rememberScrollState()))
+                        } else {
+                            SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(dArt).crossfade(1000).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxWidth().aspectRatio(1f).shadow(24.dp, RoundedCornerShape(32.dp)), error = { FallbackIcon(modifier = Modifier.size(80.dp)) })
+                        }
+                        
+                        Spacer(modifier = Modifier.height(32.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(dTitle, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(dArtist, style = MaterialTheme.typography.titleMedium, color = Color.White.copy(alpha = 0.6f), maxLines = 1)
+                            }
+                            IconButton(onClick = { coroutineScope.launch { db.updateFavoriteStatus(currentSong!!.id, !(memoryMap[currentSong!!.id]?.isFavorite ?: false)) } }) { 
+                                Icon(if (memoryMap[currentSong?.id]?.isFavorite == true) Icons.Default.Favorite else Icons.Default.FavoriteBorder, null, modifier = Modifier.size(32.dp), tint = Color.White) 
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Slider(value = if (!isLiveStream && totalDuration > 0) (currentPosition.toFloat() / totalDuration.toFloat()).coerceIn(0f, 1f) else 0f, onValueChange = { p -> if (!isLiveStream) { val np = (p * totalDuration).toLong(); exoPlayer.seekTo(np); currentPosition = np } }, modifier = Modifier.fillMaxWidth(), colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color.White.copy(alpha = 0.2f)))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            val f = { ms: Long -> String.format("%02d:%02d", ms/1000/60, ms/1000%60) }
+                            Text(if (isLiveStream) "LIVE" else f(currentPosition), color = Color.White.copy(alpha = 0.5f))
+                            Text(if (isLiveStream) "LIVE" else f(totalDuration), color = Color.White.copy(alpha = 0.5f))
+                        }
+                        Spacer(modifier = Modifier.height(32.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceEvenly) {
+                            IconButton(onClick = { handlePrev() }) { Icon(Icons.Default.SkipPrevious, null, modifier = Modifier.size(48.dp), tint = Color.White) }
+                            Box(modifier = Modifier.size(80.dp).clip(CircleShape).background(Color.White).clickable { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }, contentAlignment = Alignment.Center) { 
+                                Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null, modifier = Modifier.size(48.dp), tint = Color.Black) 
+                            }
+                            IconButton(onClick = { handleNext() }) { Icon(Icons.Default.SkipNext, null, modifier = Modifier.size(48.dp), tint = Color.White) }
+                        }
+                        Spacer(modifier = Modifier.height(32.dp))
+                    }
+                }
             }
         }
-
+        
         if (selectedSongForAction != null) {
             val s = selectedSongForAction!!
             AlertDialog(
@@ -838,91 +855,17 @@ fun MusicPlayerUI() {
     }
 }
 
-@Composable
-fun FullScreenPlayer(song: LocalSong, internetData: InternetSongData?, isPlaying: Boolean, currentPosition: Long, totalDuration: Long, isFavorite: Boolean, queueList: List<LocalSong>, memoryMap: Map<Long, SongEntity>, playSong: (LocalSong) -> Unit, onRemoveFromQueue: (Int) -> Unit, onClose: () -> Unit, onPlayPause: () -> Unit, onNext: () -> Unit, onPrev: () -> Unit, onSeek: (Float) -> Unit, onToggleFavorite: () -> Unit, isLive: Boolean, progress: Float) {
-    val displayTitle = internetData?.title ?: song.title
-    val displayArtist = internetData?.artist ?: song.artist
-    val displayArt = internetData?.artUrl?.substringBefore("|||") ?: song.customArtUrl?.substringBefore("|||") ?: song.albumArtUri.toString()
-    var showLyrics by remember { mutableStateOf(false) }
-    var showQueue by remember { mutableStateOf(false) } 
-    
-    Box(modifier = Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {})) {
-        SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(1000).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().blur(60.dp), error = { Box(Modifier.fillMaxSize().background(Color.DarkGray)) })
-        Box(modifier = Modifier.fillMaxSize().background(Brush.verticalGradient(colors = listOf(Color.Black.copy(alpha = 0.2f), Color.Black.copy(alpha = 0.9f), Color.Black), startY = 0f, endY = 2000f)))
-        
-        Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { 
-                IconButton(onClick = onClose) { Icon(Icons.Default.KeyboardArrowDown, null, modifier = Modifier.size(36.dp), tint = Color.White) }
-                Row { 
-                    IconButton(onClick = { showQueue = !showQueue; if(showQueue) showLyrics = false }) { Icon(if (showQueue) Icons.Default.QueueMusic else Icons.Default.FormatListBulleted, null, tint = Color.White) }
-                    if (internetData?.lyrics != null) {
-                        IconButton(onClick = { showLyrics = !showLyrics; if(showLyrics) showQueue = false }) { Icon(if (showLyrics) Icons.Default.MusicNote else Icons.Default.Subject, null, tint = Color.White) } 
-                    }
-                } 
-            }
-            Spacer(modifier = Modifier.weight(1f))
-            
-            if (showQueue) { 
-                Column(modifier = Modifier.fillMaxWidth().height(400.dp).background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(12.dp)).padding(8.dp)) { 
-                    Text("Up Next", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.padding(8.dp))
-                    LazyColumn(modifier = Modifier.fillMaxSize()) { 
-                        itemsIndexed(queueList) { idx, qSong -> 
-                            val mem = memoryMap[qSong.id]
-                            val qTitle = mem?.customTitle ?: qSong.title
-                            Row(modifier = Modifier.fillMaxWidth().clickable { playSong(qSong) }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) { 
-                                Icon(if (qSong.id == song.id) Icons.Default.PlayArrow else Icons.Default.MusicNote, null, tint = Color.White, modifier = Modifier.size(20.dp))
-                                Text(qTitle, color = Color.White, modifier = Modifier.weight(1f).padding(horizontal = 12.dp), maxLines = 1)
-                                IconButton(onClick = { onRemoveFromQueue(idx) }) { Icon(Icons.Default.Close, null, tint = Color.White.copy(alpha = 0.5f)) } 
-                            } 
-                        } 
-                    }
-                } 
-            } else if (showLyrics && internetData?.lyrics != null) { 
-                Text(text = internetData.lyrics, style = MaterialTheme.typography.titleMedium.copy(lineHeight = 28.sp), color = Color.White, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().height(400.dp).verticalScroll(rememberScrollState())) 
-            } else {
-                SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(displayArt).crossfade(1000).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxWidth().aspectRatio(1f).shadow(24.dp, RoundedCornerShape(32.dp)), error = { FallbackIcon(80.dp) })
-            }
-            
-            Spacer(modifier = Modifier.height(32.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { 
-                Column(modifier = Modifier.weight(1f)) { 
-                    Text(displayTitle, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(displayArtist, style = MaterialTheme.typography.titleMedium, color = Color.White.copy(alpha = 0.6f), maxLines = 1) 
-                }
-                IconButton(onClick = onToggleFavorite) { Icon(if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder, null, modifier = Modifier.size(32.dp), tint = Color.White) } 
-            }
-            Spacer(modifier = Modifier.height(24.dp))
-            Slider(value = progress, onValueChange = onSeek, modifier = Modifier.fillMaxWidth(), colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Color.White.copy(alpha = 0.2f)))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { 
-                val formatTime = { ms: Long -> String.format("%02d:%02d", ms/1000/60, ms/1000%60) }
-                Text(if(isLive) "LIVE" else formatTime(currentPosition), color = Color.White.copy(alpha = 0.5f))
-                Text(if(isLive) "LIVE" else formatTime(totalDuration), color = Color.White.copy(alpha = 0.5f)) 
-            }
-            Spacer(modifier = Modifier.height(32.dp))
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceEvenly) { 
-                IconButton(onClick = onPrev) { Icon(Icons.Default.SkipPrevious, null, modifier = Modifier.size(48.dp), tint = Color.White) }
-                Box(modifier = Modifier.size(80.dp).clip(CircleShape).background(Color.White).clickable(onClick = onPlayPause), contentAlignment = Alignment.Center) { 
-                    Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null, modifier = Modifier.size(48.dp), tint = Color.Black) 
-                }
-                IconButton(onClick = onNext) { Icon(Icons.Default.SkipNext, null, modifier = Modifier.size(48.dp), tint = Color.White) } 
-            }
-            Spacer(modifier = Modifier.height(32.dp))
-        }
-    }
-}
-
 // --- HELPER FUNCTIONS ---
 fun generateDummyId(title: String, artist: String): Long {
     val h = kotlin.math.abs((title + artist).hashCode().toLong())
     return if (h == 0L) -1L else -h
 }
 
-fun getLocalMusic(ctx: Context): List<LocalSong> {
+fun fetchLocalMusic(context: Context): List<LocalSong> {
     val songs = mutableListOf<LocalSong>()
     val uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
     val proj = arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST, MediaStore.Audio.Media.ALBUM_ID)
-    ctx.contentResolver.query(uri, proj, "${MediaStore.Audio.Media.IS_MUSIC} != 0", null, "${MediaStore.Audio.Media.TITLE} ASC")?.use { cursor ->
+    context.contentResolver.query(uri, proj, "${MediaStore.Audio.Media.IS_MUSIC} != 0", null, "${MediaStore.Audio.Media.TITLE} ASC")?.use { cursor ->
         val idC = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
         val tC = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
         val aC = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
@@ -971,6 +914,7 @@ suspend fun fetchLiveSearchResults(query: String, rawQuery: String, isPlaylistSe
             val apis = listOf("https://saavn.dev/api/search/songs?query=", "https://saavn.sumit.co/api/search/songs?query=")
             for (api in apis) {
                 try {
+                    if (AppCache.searchResults.containsKey(query)) return@async AppCache.searchResults[query]!!
                     val res = fetchHttp("$api$qEnc", 3000)
                     if (res != null) {
                         val arr = JSONObject(res).optJSONObject("data")?.optJSONArray("results")
@@ -1041,10 +985,15 @@ suspend fun fetchLiveSearchResults(query: String, rawQuery: String, isPlaylistSe
     combined.addAll(archiveTask.await())
     combined.addAll(pipedTask.await())
     
-    return@coroutineScope combined.distinctBy { it.title.lowercase() }
+    val distinctResults = combined.distinctBy { it.title.lowercase() }
+    if (distinctResults.isNotEmpty()) AppCache.searchResults[query] = distinctResults
+    
+    return@coroutineScope distinctResults
 }
 
 suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = ""): String? = withContext(Dispatchers.IO) {
+    if (AppCache.streamUrls.containsKey(songId)) return@withContext AppCache.streamUrls[songId]
+    
     if (songId.isNotBlank() && !songId.startsWith("ia:") && !songId.startsWith("yt:")) {
         val apis = listOf("https://saavn.dev/api/songs?ids=", "https://saavn.sumit.co/api/songs?ids=")
         for (api in apis) {
@@ -1054,7 +1003,11 @@ suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = 
                     val data = JSONObject(res).optJSONArray("data")
                     if (data != null && data.length() > 0) {
                         val urls = data.getJSONObject(0).optJSONArray("downloadUrl")
-                        if (urls != null) return@withContext urls.getJSONObject(urls.length()-1).optString("link")
+                        if (urls != null) {
+                            val url = urls.getJSONObject(urls.length()-1).optString("link")
+                            AppCache.streamUrls[songId] = url
+                            return@withContext url
+                        }
                     }
                 }
             } catch(e: Exception){}
@@ -1089,7 +1042,12 @@ suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = 
             }
         }
         val results = defs.awaitAll()
-        for (res in results) { if (res != null) return@withContext res }
+        for (res in results) { 
+            if (res != null) {
+                AppCache.streamUrls[songId] = res
+                return@withContext res 
+            }
+        }
     }
     return@withContext null
 }
