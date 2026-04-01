@@ -68,7 +68,6 @@ fun FallbackIcon(modifier: Modifier = Modifier, iconSize: Dp = 48.dp) {
     }
 }
 
-// FIXED: LocalSong now holds lyrics, making it the Single Source of Truth
 data class LocalSong(
     val id: Long, val title: String, val artist: String, val albumId: Long, 
     val webStreamUrl: String? = null, val customArtUrl: String? = null, val lyrics: String? = null
@@ -102,8 +101,10 @@ fun TrackRow(songId: Long, title: String, artist: String, artUrl: String, isPlay
 }
 
 @Composable
-fun MiniPlayer(s: LocalSong, isP: Boolean, pos: Long, dur: Long, onPP: () -> Unit, onN: () -> Unit, onC: () -> Unit) {
-    val img = s.customArtUrl?.substringBefore("|||") ?: s.albumArtUri.toString()
+fun MiniPlayer(s: LocalSong, w: InternetSongData?, isP: Boolean, pos: Long, dur: Long, onPP: () -> Unit, onN: () -> Unit, onC: () -> Unit) {
+    val t = w?.title ?: s.title
+    val a = w?.artist ?: s.artist
+    val img = w?.artUrl?.substringBefore("|||") ?: s.customArtUrl?.substringBefore("|||") ?: s.albumArtUri.toString()
     
     Surface(modifier = Modifier.fillMaxWidth().padding(12.dp, 8.dp).clickable(onClick = onC), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface, shadowElevation = 8.dp) {
         Column {
@@ -111,8 +112,8 @@ fun MiniPlayer(s: LocalSong, isP: Boolean, pos: Long, dur: Long, onPP: () -> Uni
             Row(modifier = Modifier.padding(12.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(img).crossfade(true).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(44.dp).clip(RoundedCornerShape(8.dp)), error = { FallbackIcon(modifier = Modifier.size(20.dp)) })
                 Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) { 
-                    Text(s.title, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(s.artist, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), maxLines = 1, overflow = TextOverflow.Ellipsis) 
+                    Text(t, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(a, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), maxLines = 1, overflow = TextOverflow.Ellipsis) 
                 }
                 IconButton(onClick = onPP) { Icon(if (isP) Icons.Default.Pause else Icons.Default.PlayArrow, null, modifier = Modifier.size(32.dp)) }
                 IconButton(onClick = onN) { Icon(Icons.Default.SkipNext, null) }
@@ -194,6 +195,7 @@ fun MusicPlayerUI() {
     }
 
     var currentSong by remember { mutableStateOf<LocalSong?>(null) }
+    var fetchedInternetData by remember { mutableStateOf<InternetSongData?>(null) } 
     var selectedSongForAction by remember { mutableStateOf<LocalSong?>(null) }
     var showEditDialog by remember { mutableStateOf(false) }
     var showAddToPlaylistDialog by remember { mutableStateOf(false) }
@@ -273,6 +275,7 @@ fun MusicPlayerUI() {
                     withContext(Dispatchers.IO) { 
                         db.saveSongMemory(SongEntity(parentId, webSongData.title, webSongData.artist, webSongData.title, webSongData.artist, "${webSongData.artUrl}|||${webSongData.id}", null, memoryMap[parentId]?.isFavorite ?: false, System.currentTimeMillis())) 
                     }
+                    fetchedInternetData = webSongData
                     playSongList(iaPlaylist.first(), iaPlaylist)
                     showFullScreenPlayer = true
                 }
@@ -295,6 +298,7 @@ fun MusicPlayerUI() {
                 withContext(Dispatchers.IO) { 
                     db.saveSongMemory(SongEntity(dummyId, webSongData.title, webSongData.artist, webSongData.title, webSongData.artist, "${webSongData.artUrl}|||${webSongData.id}", null, memoryMap[dummyId]?.isFavorite ?: false, System.currentTimeMillis())) 
                 }
+                fetchedInternetData = webSongData
                 playQueue = listOf(dummySong)
                 exoPlayer.stop()
                 exoPlayer.clearMediaItems()
@@ -402,15 +406,32 @@ fun MusicPlayerUI() {
         }
     }
 
-    // FIXED: Lyrics sync logic directly updates currentSong, keeping UI absolutely perfectly aligned
     LaunchedEffect(currentSong) {
         val song = currentSong ?: return@LaunchedEffect
         if (song.id >= 0L) return@LaunchedEffect 
-        if (song.lyrics == null) {
-            val lyrics = searchLyricsAPI(song.title, song.artist)
+        
+        val mem = db.getSongMemory(song.id)
+        val dTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title
+        val dArtist = mem?.customArtist?.takeIf { it.isNotBlank() } ?: mem?.fetchedArtist?.takeIf { it.isNotBlank() } ?: song.artist
+        
+        fetchedInternetData = InternetSongData("", dTitle, dArtist, mem?.fetchedArtUrl ?: "", mem?.fetchedLyrics)
+        db.saveSongMemory(SongEntity(song.id, mem?.customTitle, mem?.customArtist, mem?.fetchedTitle ?: dTitle, mem?.fetchedArtist ?: dArtist, mem?.fetchedArtUrl, mem?.fetchedLyrics, mem?.isFavorite ?: false, System.currentTimeMillis()))
+        
+        if (mem?.fetchedArtUrl == null) { 
+            val res = fetchMultiSourceMetadata(dTitle, dArtist)
+            if (res != null) { 
+                fetchedInternetData = res
+                db.saveSongMemory(SongEntity(song.id, mem?.customTitle, mem?.customArtist, res.title, res.artist, res.artUrl, res.lyrics, mem?.isFavorite ?: false, System.currentTimeMillis())) 
+            } 
+        }
+
+        if (song.lyrics == null && fetchedInternetData?.lyrics == null) {
+            val lyrics = searchLyricsAPI(dTitle, dArtist)
             if (lyrics != null) {
+                fetchedInternetData = fetchedInternetData?.copy(lyrics = lyrics)
                 playQueue = playQueue.map { if (it.id == song.id) it.copy(lyrics = lyrics) else it }
                 if (currentSong?.id == song.id) currentSong = currentSong?.copy(lyrics = lyrics)
+                db.saveSongMemory(SongEntity(song.id, mem?.customTitle, mem?.customArtist, fetchedInternetData?.title ?: dTitle, fetchedInternetData?.artist ?: dArtist, fetchedInternetData?.artUrl ?: mem?.fetchedArtUrl, lyrics, mem?.isFavorite ?: false, System.currentTimeMillis()))
             }
         }
     }
@@ -453,7 +474,7 @@ fun MusicPlayerUI() {
             bottomBar = { 
                 Column {
                     if (currentSong != null) {
-                        MiniPlayer(s = currentSong!!, isP = isPlaying, pos = currentPosition, dur = totalDuration, onPP = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }, onN = { handleNext() }, onC = { showFullScreenPlayer = true })
+                        MiniPlayer(s = currentSong!!, w = fetchedInternetData, isP = isPlaying, pos = currentPosition, dur = totalDuration, onPP = { if (isPlaying) exoPlayer.pause() else exoPlayer.play() }, onN = { handleNext() }, onC = { showFullScreenPlayer = true })
                     }
                     NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
                         NavigationBarItem(icon = { Icon(Icons.Default.Home, null) }, label = { Text("Home", fontSize = 10.sp) }, selected = currentTab == 0 && !isSearchActive, onClick = { currentTab = 0; isSearchActive = false; viewingLikedSongs = false; viewingPlaylistId = null })
@@ -491,7 +512,7 @@ fun MusicPlayerUI() {
                                 TrackRow(
                                     songId = -1L, title = song.title, artist = song.artist, artUrl = song.artUrl, isPlaying = currentSong?.title == song.title, 
                                     onClick = { autoPlayContext = liveSearchResults; autoPlayIndex = liveSearchResults.indexOf(song); playWebSong(song) }, 
-                                    onLongClick = { selectedSongForAction = LocalSong(generateDummyId(song.title, song.artist), song.title, song.artist, -1L, null, "${song.artUrl}|||${song.id}") },
+                                    onLongClick = { selectedSongForAction = LocalSong(generateDummyId(song.title, song.artist), song.title, song.artist, -1L, null, "${song.artUrl}|||${song.id}"); fetchedInternetData = song },
                                     onAddQueue = { handleAddQueue(LocalSong(generateDummyId(song.title, song.artist), song.title, song.artist, -1L, null, "${song.artUrl}|||${song.id}"), song) }
                                 ) 
                             }
@@ -516,7 +537,7 @@ fun MusicPlayerUI() {
                                                     autoPlayContext = recentlyPlayedSongs.filter { it.id < 0 }.map { InternetSongData(it.customArtUrl?.substringAfter("|||", "") ?: "", it.title, it.artist, it.customArtUrl?.substringBefore("|||") ?: "") }
                                                     autoPlayIndex = autoPlayContext.indexOfFirst { it.title == dTitle }
                                                     if (song.webStreamUrl != null) { 
-                                                        playQueue = listOf(song); exoPlayer.setMediaItem(MediaItem.fromUri(song.webStreamUrl)); exoPlayer.prepare(); exoPlayer.play()
+                                                        playQueue = listOf(song); exoPlayer.setMediaItem(MediaItem.fromUri(song.webStreamUrl)); exoPlayer.prepare(); exoPlayer.play(); currentSong = song 
                                                     } else {
                                                         playWebSong(InternetSongData(realId, dTitle, song.artist, dArt)) 
                                                     }
@@ -663,9 +684,9 @@ fun MusicPlayerUI() {
             if (currentSong != null) {
                 var sL by remember { mutableStateOf(false) }
                 var sQ by remember { mutableStateOf(false) }
-                val dTitle = currentSong!!.title
-                val dArtist = currentSong!!.artist
-                val dArt = currentSong!!.customArtUrl?.substringBefore("|||") ?: currentSong!!.albumArtUri.toString()
+                val dTitle = fetchedInternetData?.title ?: currentSong!!.title
+                val dArtist = fetchedInternetData?.artist ?: currentSong!!.artist
+                val dArt = fetchedInternetData?.artUrl?.substringBefore("|||") ?: currentSong!!.customArtUrl?.substringBefore("|||") ?: currentSong!!.albumArtUri.toString()
 
                 Box(modifier = Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}) {
                     SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(dArt).crossfade(1000).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().blur(60.dp), error = { Box(Modifier.fillMaxSize().background(Color.DarkGray)) })
@@ -676,7 +697,7 @@ fun MusicPlayerUI() {
                             IconButton(onClick = { showFullScreenPlayer = false }) { Icon(Icons.Default.KeyboardArrowDown, null, modifier = Modifier.size(36.dp), tint = Color.White) }
                             Row {
                                 IconButton(onClick = { sQ = !sQ; if(sQ) sL = false }) { Icon(if (sQ) Icons.Default.QueueMusic else Icons.Default.FormatListBulleted, null, tint = Color.White) }
-                                if (currentSong?.lyrics != null) {
+                                if (fetchedInternetData?.lyrics != null) {
                                     IconButton(onClick = { sL = !sL; if(sL) sQ = false }) { Icon(if (sL) Icons.Default.MusicNote else Icons.Default.Subject, null, tint = Color.White) }
                                 }
                             }
@@ -704,8 +725,8 @@ fun MusicPlayerUI() {
                                     }
                                 }
                             }
-                        } else if (sL && currentSong?.lyrics != null) {
-                            Text(text = currentSong!!.lyrics!!, style = MaterialTheme.typography.titleMedium.copy(lineHeight = 28.sp), color = Color.White, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().height(400.dp).verticalScroll(rememberScrollState()))
+                        } else if (sL && fetchedInternetData?.lyrics != null) {
+                            Text(text = fetchedInternetData!!.lyrics!!, style = MaterialTheme.typography.titleMedium.copy(lineHeight = 28.sp), color = Color.White, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().height(400.dp).verticalScroll(rememberScrollState()))
                         } else {
                             SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(dArt).crossfade(1000).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxWidth().aspectRatio(1f).shadow(24.dp, RoundedCornerShape(32.dp)), error = { FallbackIcon(modifier = Modifier.size(80.dp)) })
                         }
@@ -882,6 +903,17 @@ private fun fetchHttp(urlStr: String, timeoutMs: Int = 6000): String? {
     } catch (e: Exception) { null }
 }
 
+suspend fun searchLyricsAPI(title: String, artist: String): String? = withContext(Dispatchers.IO) {
+    try {
+        val res = fetchHttp("https://lrclib.net/api/search?q=${URLEncoder.encode("$title $artist", "UTF-8")}", 4000)
+        if (res != null) {
+            val arr = JSONArray(res)
+            if (arr.length() > 0) return@withContext arr.getJSONObject(0).optString("plainLyrics").takeIf { it.isNotBlank() }
+        }
+    } catch (e: Exception) {}
+    return@withContext null
+}
+
 suspend fun getAutoLanguage(): String = withContext(Dispatchers.IO) {
     try {
         val res = fetchHttp("https://ipwho.is/") ?: return@withContext "All"
@@ -995,7 +1027,6 @@ suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = 
                     if (data != null && data.length() > 0) {
                         val urls = data.getJSONObject(0).optJSONArray("downloadUrl")
                         if (urls != null) {
-                            // FIXED: Prioritizing "url" then "link"
                             val lastObj = urls.getJSONObject(urls.length()-1)
                             finalUrl = lastObj.optString("url").takeIf { it.isNotBlank() } ?: lastObj.optString("link")
                             if (finalUrl?.isNotBlank() == true) break
@@ -1044,7 +1075,6 @@ suspend fun getPipedStream(vid: String): String? {
             val res = fetchHttp("https://$inst/streams/$vid", 5000) ?: continue
             val json = JSONObject(res)
             
-            // FIXED: HLS EXTRACTOR RESTORED FOR LIVE RADIO
             val hls = json.optString("hls", "")
             if (hls.isNotBlank()) return hls
             
@@ -1105,16 +1135,8 @@ suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSon
     
     val result = t1.await() ?: t2.await()
     if (result != null) {
-        try {
-            val res = fetchHttp("https://lrclib.net/api/search?q=${URLEncoder.encode("$title $artist", "UTF-8")}", 4000)
-            if (res != null) {
-                val arr = JSONArray(res)
-                if (arr.length() > 0) {
-                    return@coroutineScope result.copy(lyrics = arr.getJSONObject(0).optString("plainLyrics"))
-                }
-            }
-        } catch(e: Exception){}
-        return@coroutineScope result
+        val lyrics = searchLyricsAPI(title, artist)
+        return@coroutineScope result.copy(lyrics = lyrics)
     }
     return@coroutineScope null
 }
