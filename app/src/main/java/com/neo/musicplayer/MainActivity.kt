@@ -68,8 +68,10 @@ fun FallbackIcon(modifier: Modifier = Modifier, iconSize: Dp = 48.dp) {
     }
 }
 
+// FIXED: Explicitly separated audioUri from albumArtUri so the player doesn't try to play JPGs
 data class LocalSong(val id: Long, val title: String, val artist: String, val albumId: Long, val webStreamUrl: String? = null, val customArtUrl: String? = null) { 
     val albumArtUri: Uri get() = if(customArtUrl != null) Uri.parse(customArtUrl.substringBefore("|||")) else Uri.parse("content://media/external/audio/albumart/$albumId") 
+    val audioUri: Uri get() = if(webStreamUrl != null) Uri.parse(webStreamUrl) else ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
 }
 
 data class InternetSongData(val id: String = "", val title: String, val artist: String, val artUrl: String, val lyrics: String? = null)
@@ -224,7 +226,8 @@ fun MusicPlayerUI() {
         val idx = sourceList.indexOf(song)
         exoPlayer.stop()
         exoPlayer.clearMediaItems()
-        exoPlayer.setMediaItems(sourceList.map { s -> MediaItem.Builder().setUri(s.webStreamUrl ?: ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, s.id).toString()).setMediaId(s.id.toString()).build() })
+        // FIXED: Now correctly extracts the Audio URI instead of the Album Art URI
+        exoPlayer.setMediaItems(sourceList.map { s -> MediaItem.Builder().setUri(s.audioUri).setMediaId(s.id.toString()).build() })
         if (idx >= 0) exoPlayer.seekTo(idx, C.TIME_UNSET)
         exoPlayer.prepare()
         exoPlayer.play()
@@ -279,10 +282,8 @@ fun MusicPlayerUI() {
                 return@launch
             }
 
-            // UNICODE SAFE MATCHING: No Regex stripping!
-            val cTitle = webSongData.title.lowercase().trim()
-            val localMatch = if (cTitle.isNotBlank()) localSongs.find { it.title.lowercase().trim().let { n -> n == cTitle || n.contains(cTitle) || cTitle.contains(n) } } else null
-            
+            val cleanTitle = webSongData.title.lowercase().trim()
+            val localMatch = if (cleanTitle.isNotBlank()) localSongs.find { it.title.lowercase().trim().let { n -> n == cleanTitle || n.contains(cleanTitle) || cleanTitle.contains(n) } } else null
             if (localMatch != null) { 
                 playSongList(localMatch, localSongs)
                 showFullScreenPlayer = true
@@ -305,7 +306,7 @@ fun MusicPlayerUI() {
                 exoPlayer.prepare()
                 exoPlayer.play()
                 showFullScreenPlayer = true
-            } else {
+            } else { 
                 Toast.makeText(context, "Stream unavailable. Skipping...", Toast.LENGTH_SHORT).show()
                 if (autoPlayContext.isNotEmpty() && autoPlayIndex in 0 until autoPlayContext.size - 1) { 
                     autoPlayIndex++
@@ -350,7 +351,7 @@ fun MusicPlayerUI() {
                 }
             } else {
                 playQueue = playQueue + s
-                exoPlayer.addMediaItem(MediaItem.fromUri(s.albumArtUri))
+                exoPlayer.addMediaItem(MediaItem.fromUri(s.audioUri)) // FIXED to audioUri
                 if (!isPlaying && exoPlayer.mediaItemCount == 1) { exoPlayer.prepare(); exoPlayer.play() }
                 Toast.makeText(context, "Added to Queue", Toast.LENGTH_SHORT).show()
             }
@@ -535,7 +536,7 @@ fun MusicPlayerUI() {
                                                 } else { 
                                                     playQueue = recentlyPlayedSongs.filter { it.id >= 0 }
                                                     val idx = playQueue.indexOf(song)
-                                                    exoPlayer.setMediaItems(playQueue.map { MediaItem.fromUri(it.albumArtUri) })
+                                                    exoPlayer.setMediaItems(playQueue.map { MediaItem.fromUri(it.audioUri) })
                                                     exoPlayer.seekTo(idx, 0L); exoPlayer.prepare(); exoPlayer.play() 
                                                 } 
                                             }) {
@@ -568,7 +569,7 @@ fun MusicPlayerUI() {
                                                 else { 
                                                     playQueue = favoriteSongs.filter { it.id >= 0 }
                                                     val idx = playQueue.indexOf(song)
-                                                    exoPlayer.setMediaItems(playQueue.map { MediaItem.fromUri(it.albumArtUri) })
+                                                    exoPlayer.setMediaItems(playQueue.map { MediaItem.fromUri(it.audioUri) })
                                                     exoPlayer.seekTo(idx, 0L); exoPlayer.prepare(); exoPlayer.play() 
                                                 } 
                                             }, 
@@ -655,7 +656,7 @@ fun MusicPlayerUI() {
                                         onClick = { 
                                             playQueue = localSongs
                                             val idx = localSongs.indexOf(song)
-                                            exoPlayer.setMediaItems(localSongs.map { MediaItem.fromUri(it.albumArtUri) })
+                                            exoPlayer.setMediaItems(localSongs.map { MediaItem.fromUri(it.audioUri) })
                                             exoPlayer.seekTo(idx, 0L)
                                             exoPlayer.prepare()
                                             exoPlayer.play() 
@@ -773,7 +774,7 @@ fun MusicPlayerUI() {
                                 } 
                             } else { 
                                 playQueue = playQueue + s
-                                exoPlayer.addMediaItem(MediaItem.fromUri(s.albumArtUri)) 
+                                exoPlayer.addMediaItem(MediaItem.fromUri(s.audioUri)) 
                             }
                             selectedSongForAction = null 
                         }, modifier = Modifier.fillMaxWidth()) { Text("Add to Queue") } 
@@ -918,7 +919,7 @@ suspend fun fetchLiveSearchResults(query: String, rawQuery: String, isPlaylistSe
             val apis = listOf("https://saavn.dev/api/search/songs?query=", "https://saavn.sumit.co/api/search/songs?query=")
             for (api in apis) {
                 try {
-                    val res = fetchHttp("$api$qEnc", 5000)
+                    val res = fetchHttp("$api$qEnc", 3000)
                     if (res != null) {
                         val arr = JSONObject(res).optJSONObject("data")?.optJSONArray("results")
                         if (arr != null) { 
@@ -941,7 +942,7 @@ suspend fun fetchLiveSearchResults(query: String, rawQuery: String, isPlaylistSe
             try {
                 val qBase = if (rawQuery.isBlank()) "subject:\"music\" OR subject:\"soundtrack\" OR subject:\"ost\"" else "($rawQuery)"
                 val exact = "$qBase AND mediatype:audio AND NOT subject:\"news\" AND NOT subject:\"podcast\" AND NOT subject:\"ep\" AND NOT subject:\"broadcast\" AND NOT creator:\"voa\""
-                val res = fetchHttp("https://archive.org/advancedsearch.php?q=${URLEncoder.encode(exact, "UTF-8")}&fl[]=identifier,title,creator&rows=15&output=json", 5000)
+                val res = fetchHttp("https://archive.org/advancedsearch.php?q=${URLEncoder.encode(exact, "UTF-8")}&fl[]=identifier,title,creator&rows=15&output=json", 4000)
                 if (res != null) {
                     val docs = JSONObject(res).optJSONObject("response")?.optJSONArray("docs")
                     if (docs != null) { 
@@ -960,14 +961,14 @@ suspend fun fetchLiveSearchResults(query: String, rawQuery: String, isPlaylistSe
     val pipedTask = async<List<InternetSongData>>(Dispatchers.IO) {
         val list = mutableListOf<InternetSongData>()
         if (!isPlaylistSearch) {
-            val instances = listOf("pipedapi.kavin.rocks", "pipedapi.smnz.de", "api.piped.stream")
+            val instances = listOf("pipedapi.kavin.rocks", "pipedapi.tokhmi.xyz", "piped.projectsegfau.lt", "pipedapi.smnz.de")
             for (instance in instances) {
                 try {
-                    val res = fetchHttp("https://$instance/search?q=$qEnc&filter=music_songs", 5000)
+                    val res = fetchHttp("https://$instance/search?q=$qEnc&filter=music_songs", 3000)
                     if (res != null) { 
                         val items = JSONObject(res).optJSONArray("items")
                         if (items != null) { 
-                            for (i in 0 until minOf(items.length(), 15)) { 
+                            for (i in 0 until minOf(items.length(), 10)) { 
                                 val t = items.getJSONObject(i)
                                 if (t.optString("type") == "stream") { 
                                     val vid = t.optString("url").replace("/watch?v=", "").substringBefore("&")
@@ -1001,7 +1002,7 @@ suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = 
         val apis = listOf("https://saavn.dev/api/songs?ids=", "https://saavn.sumit.co/api/songs?ids=")
         for (api in apis) {
             try {
-                val res = fetchHttp("$api$songId", 5000)
+                val res = fetchHttp("$api$songId", 4000)
                 if (res != null) {
                     val data = JSONObject(res).optJSONArray("data")
                     if (data != null && data.length() > 0) {
@@ -1022,13 +1023,13 @@ suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = 
         finalUrl = getPipedStream(vid)
     }
 
-    // 3. ULTIMATE FALLBACK: If Saavn failed, search YouTube and grab the highest quality audio stream
+    // 3. ULTIMATE FALLBACK: If Saavn failed, search YouTube and grab the stream
     if (finalUrl == null && title.isNotBlank()) {
         val qEnc = URLEncoder.encode("$title $artist audio", "UTF-8")
-        val instances = listOf("pipedapi.kavin.rocks", "pipedapi.smnz.de", "api.piped.stream")
+        val instances = listOf("pipedapi.kavin.rocks", "pipedapi.tokhmi.xyz", "piped.projectsegfau.lt", "pipedapi.smnz.de")
         for (inst in instances) {
             try {
-                val res = fetchHttp("https://$inst/search?q=$qEnc&filter=music_songs", 5000)
+                val res = fetchHttp("https://$inst/search?q=$qEnc&filter=music_songs", 4000)
                 val items = JSONObject(res ?: "").optJSONArray("items")
                 if (items != null && items.length() > 0) {
                     val vid = items.getJSONObject(0).optString("url").substringAfter("v=").substringBefore("&")
@@ -1048,11 +1049,17 @@ suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = 
 }
 
 suspend fun getPipedStream(vid: String): String? {
-    val instances = listOf("pipedapi.kavin.rocks", "pipedapi.smnz.de", "api.piped.stream", "piped.tokhmi.xyz")
+    val instances = listOf("pipedapi.kavin.rocks", "pipedapi.tokhmi.xyz", "piped.projectsegfau.lt", "pipedapi.smnz.de")
     for (inst in instances) {
         try {
-            val res = fetchHttp("https://$inst/streams/$vid", 5000) ?: continue
-            val streams = JSONObject(res).optJSONArray("audioStreams")
+            val res = fetchHttp("https://$inst/streams/$vid", 4000) ?: continue
+            val json = JSONObject(res)
+            
+            // CRITICAL FOR LIVE STREAMS: Check for HLS explicitly first!
+            val hls = json.optString("hls", "")
+            if (hls.isNotBlank()) return hls
+            
+            val streams = json.optJSONArray("audioStreams")
             var bestUrl: String? = null
             var highestBitrate = 0
             if (streams != null) {
@@ -1076,7 +1083,7 @@ suspend fun getPipedStream(vid: String): String? {
 }
 
 suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSongData? = coroutineScope {
-    val cleanTitle = title.lowercase().replace(".mp3", "").replace(".m4a", "").trim()
+    val cleanTitle = title.lowercase().replace(".mp3", "").replace(".m4a", "").replace(Regex("\\[.*?\\]|\\(.*?\\)"), "").trim()
     
     val t1 = async<InternetSongData?>(Dispatchers.IO) { 
         try {
