@@ -68,11 +68,13 @@ fun FallbackIcon(modifier: Modifier = Modifier, iconSize: Dp = 48.dp) {
     }
 }
 
+// FIXED: audioUri strictly separates the playable audio file from the visual album art
 data class LocalSong(
     val id: Long, val title: String, val artist: String, val albumId: Long, 
     val webStreamUrl: String? = null, val customArtUrl: String? = null, val lyrics: String? = null
 ) { 
     val albumArtUri: Uri get() = if(customArtUrl != null) Uri.parse(customArtUrl.substringBefore("|||")) else Uri.parse("content://media/external/audio/albumart/$albumId") 
+    val audioUri: Uri get() = if(webStreamUrl != null) Uri.parse(webStreamUrl) else ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
 }
 
 data class InternetSongData(val id: String = "", val title: String, val artist: String, val artUrl: String, val lyrics: String? = null)
@@ -227,7 +229,8 @@ fun MusicPlayerUI() {
         val idx = sourceList.indexOf(song)
         exoPlayer.stop()
         exoPlayer.clearMediaItems()
-        exoPlayer.setMediaItems(sourceList.map { s -> MediaItem.Builder().setUri(s.webStreamUrl ?: ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, s.id).toString()).setMediaId(s.id.toString()).build() })
+        // FIXED: Universal use of proper audioUri for offline compatibility
+        exoPlayer.setMediaItems(sourceList.map { s -> MediaItem.Builder().setUri(s.audioUri).setMediaId(s.id.toString()).build() })
         if (idx >= 0) exoPlayer.seekTo(idx, C.TIME_UNSET)
         exoPlayer.prepare()
         exoPlayer.play()
@@ -351,7 +354,7 @@ fun MusicPlayerUI() {
                 }
             } else {
                 playQueue = playQueue + s
-                exoPlayer.addMediaItem(MediaItem.fromUri(s.albumArtUri))
+                exoPlayer.addMediaItem(MediaItem.fromUri(s.audioUri))
                 if (!isPlaying && exoPlayer.mediaItemCount == 1) { exoPlayer.prepare(); exoPlayer.play() }
                 Toast.makeText(context, "Added to Queue", Toast.LENGTH_SHORT).show()
             }
@@ -381,6 +384,11 @@ fun MusicPlayerUI() {
                         }
                     }
                 }
+            }
+            // FIXED: Crash handling allows seamless skips instead of UI lock
+            override fun onPlayerError(error: PlaybackException) {
+                Toast.makeText(context, "Stream error, skipping...", Toast.LENGTH_SHORT).show()
+                handleNext()
             }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) { 
                 if (mediaItem == null || exoPlayer.mediaItemCount == 0) { 
@@ -537,15 +545,12 @@ fun MusicPlayerUI() {
                                                     autoPlayContext = recentlyPlayedSongs.filter { it.id < 0 }.map { InternetSongData(it.customArtUrl?.substringAfter("|||", "") ?: "", it.title, it.artist, it.customArtUrl?.substringBefore("|||") ?: "") }
                                                     autoPlayIndex = autoPlayContext.indexOfFirst { it.title == dTitle }
                                                     if (song.webStreamUrl != null) { 
-                                                        playQueue = listOf(song); exoPlayer.setMediaItem(MediaItem.fromUri(song.webStreamUrl)); exoPlayer.prepare(); exoPlayer.play(); currentSong = song 
+                                                        playSongList(song, listOf(song))
                                                     } else {
                                                         playWebSong(InternetSongData(realId, dTitle, song.artist, dArt)) 
                                                     }
                                                 } else { 
-                                                    playQueue = recentlyPlayedSongs.filter { it.id >= 0 }
-                                                    val idx = playQueue.indexOf(song)
-                                                    exoPlayer.setMediaItems(playQueue.map { MediaItem.fromUri(it.albumArtUri) })
-                                                    exoPlayer.seekTo(idx, 0L); exoPlayer.prepare(); exoPlayer.play() 
+                                                    playSongList(song, recentlyPlayedSongs.filter { it.id >= 0 })
                                                 } 
                                             }) {
                                                 SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(dArt).crossfade(true).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(120.dp).clip(RoundedCornerShape(8.dp)), error = { FallbackIcon() })
@@ -573,12 +578,10 @@ fun MusicPlayerUI() {
                                         
                                         TrackRow(song.id, dTitle, dArtist, dArt, currentSong?.id == song.id, 
                                             onClick = { 
-                                                if (song.id < 0) { playWebSong(InternetSongData(realId, dTitle, dArtist, dArt)) } 
-                                                else { 
-                                                    playQueue = favoriteSongs.filter { it.id >= 0 }
-                                                    val idx = playQueue.indexOf(song)
-                                                    exoPlayer.setMediaItems(playQueue.map { MediaItem.fromUri(it.albumArtUri) })
-                                                    exoPlayer.seekTo(idx, 0L); exoPlayer.prepare(); exoPlayer.play() 
+                                                if (song.id < 0) { 
+                                                    if (song.webStreamUrl != null) playSongList(song, listOf(song)) else playWebSong(InternetSongData(realId, dTitle, dArtist, dArt)) 
+                                                } else { 
+                                                    playSongList(song, favoriteSongs.filter { it.id >= 0 })
                                                 } 
                                             }, 
                                             onLongClick = { selectedSongForAction = song },
@@ -662,12 +665,7 @@ fun MusicPlayerUI() {
                                     val dArt = mem?.fetchedArtUrl?.substringBefore("|||") ?: song.albumArtUri.toString()
                                     TrackRow(song.id, dTitle, dArtist, dArt, currentSong?.id == song.id, 
                                         onClick = { 
-                                            playQueue = localSongs
-                                            val idx = localSongs.indexOf(song)
-                                            exoPlayer.setMediaItems(localSongs.map { MediaItem.fromUri(it.albumArtUri) })
-                                            exoPlayer.seekTo(idx, 0L)
-                                            exoPlayer.prepare()
-                                            exoPlayer.play() 
+                                            playSongList(song, localSongs) 
                                         }, 
                                         onLongClick = { selectedSongForAction = song },
                                         onAddQueue = { handleAddQueue(song, null) }
@@ -782,7 +780,7 @@ fun MusicPlayerUI() {
                                 } 
                             } else { 
                                 playQueue = playQueue + s
-                                exoPlayer.addMediaItem(MediaItem.fromUri(s.albumArtUri)) 
+                                exoPlayer.addMediaItem(MediaItem.fromUri(s.audioUri)) 
                             }
                             selectedSongForAction = null 
                         }, modifier = Modifier.fillMaxWidth()) { Text("Add to Queue") } 
@@ -1028,8 +1026,12 @@ suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = 
                         val urls = data.getJSONObject(0).optJSONArray("downloadUrl")
                         if (urls != null) {
                             val lastObj = urls.getJSONObject(urls.length()-1)
-                            finalUrl = lastObj.optString("url").takeIf { it.isNotBlank() } ?: lastObj.optString("link")
-                            if (finalUrl?.isNotBlank() == true) break
+                            var url = lastObj.optString("url").takeIf { it.isNotBlank() } ?: lastObj.optString("link")
+                            if (url.isNotBlank()) {
+                                // FIXED: Cleans cleartext HTTP to prevent silent crashing
+                                finalUrl = url.replace("http://", "https://")
+                                break
+                            }
                         }
                     }
                 }
@@ -1043,7 +1045,7 @@ suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = 
         finalUrl = getPipedStream(vid)
     }
 
-    // 3. ULTIMATE FALLBACK: If Saavn failed, search YouTube and grab the stream
+    // 3. ULTIMATE FALLBACK: Search YouTube directly
     if (finalUrl.isNullOrBlank() && title.isNotBlank()) {
         val qEnc = URLEncoder.encode("$title $artist audio", "UTF-8")
         val instances = listOf("pipedapi.kavin.rocks", "pipedapi.tokhmi.xyz", "piped.projectsegfau.lt", "pipedapi.smnz.de")
@@ -1075,6 +1077,7 @@ suspend fun getPipedStream(vid: String): String? {
             val res = fetchHttp("https://$inst/streams/$vid", 5000) ?: continue
             val json = JSONObject(res)
             
+            // FIXED: Added HLS fallback for 24/7 radio streams
             val hls = json.optString("hls", "")
             if (hls.isNotBlank()) return hls
             
@@ -1135,8 +1138,16 @@ suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSon
     
     val result = t1.await() ?: t2.await()
     if (result != null) {
-        val lyrics = searchLyricsAPI(title, artist)
-        return@coroutineScope result.copy(lyrics = lyrics)
+        try {
+            val res = fetchHttp("https://lrclib.net/api/search?q=${URLEncoder.encode("$title $artist", "UTF-8")}", 4000)
+            if (res != null) {
+                val arr = JSONArray(res)
+                if (arr.length() > 0) {
+                    return@coroutineScope result.copy(lyrics = arr.getJSONObject(0).optString("plainLyrics"))
+                }
+            }
+        } catch(e: Exception){}
+        return@coroutineScope result
     }
     return@coroutineScope null
 }
