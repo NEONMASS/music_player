@@ -155,9 +155,6 @@ fun MusicPlayerUI() {
     var selectedLanguage by remember { mutableStateOf(sharedPrefs.getString("saved_lang", "") ?: "") } 
     var isPlaylistMode by remember { mutableStateOf(false) }
 
-    // Ensures selected language is up-to-date for ExoPlayer effect
-    val currentLang by rememberUpdatedState(selectedLanguage)
-
     LaunchedEffect(Unit) {
         if (selectedLanguage.isBlank()) {
             val detectedLang = getAutoLanguage()
@@ -365,10 +362,6 @@ fun MusicPlayerUI() {
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener { 
             override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
-            override fun onPlayerError(error: PlaybackException) {
-                Toast.makeText(context, "Stream error, skipping...", Toast.LENGTH_SHORT).show()
-                handleNext()
-            }
             override fun onPlaybackStateChanged(state: Int) { 
                 if (state == Player.STATE_ENDED) {
                     if (autoPlayContext.isNotEmpty() && autoPlayIndex in 0 until autoPlayContext.size - 1) { 
@@ -377,8 +370,7 @@ fun MusicPlayerUI() {
                     } else if ((currentSong?.id ?: 0L) < 0L) {
                         coroutineScope.launch {
                             val cSong = currentSong ?: return@launch
-                            // FIXED: Language is now explicitly injected into recommendations
-                            val langSuffix = if (currentLang != "All" && currentLang.isNotBlank()) " $currentLang" else ""
+                            val langSuffix = if (selectedLanguage != "All" && selectedLanguage.isNotBlank()) " $selectedLanguage" else ""
                             val recQuery = "${cSong.artist} Hits$langSuffix"
                             val recs = fetchLiveSearchResults(recQuery, recQuery, false)
                             if (recs.isNotEmpty()) { 
@@ -391,6 +383,10 @@ fun MusicPlayerUI() {
                         }
                     }
                 }
+            }
+            override fun onPlayerError(error: PlaybackException) {
+                Toast.makeText(context, "Stream error, skipping...", Toast.LENGTH_SHORT).show()
+                handleNext()
             }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) { 
                 if (mediaItem == null || exoPlayer.mediaItemCount == 0) { 
@@ -418,7 +414,12 @@ fun MusicPlayerUI() {
 
     LaunchedEffect(currentSong) {
         val song = currentSong ?: return@LaunchedEffect
-        if (song.id >= 0L) return@LaunchedEffect 
+        
+        // FIX 1: If playing a local song, instantly drop old web metadata to prevent UI desync
+        if (song.id >= 0L) {
+            fetchedInternetData = null
+            return@LaunchedEffect 
+        }
         
         val mem = db.getSongMemory(song.id)
         val dTitle = mem?.customTitle?.takeIf { it.isNotBlank() } ?: mem?.fetchedTitle?.takeIf { it.isNotBlank() } ?: song.title
@@ -547,12 +548,12 @@ fun MusicPlayerUI() {
                                                     autoPlayContext = recentlyPlayedSongs.filter { it.id < 0 }.map { InternetSongData(it.customArtUrl?.substringAfter("|||", "") ?: "", it.title, it.artist, it.customArtUrl?.substringBefore("|||") ?: "") }
                                                     autoPlayIndex = autoPlayContext.indexOfFirst { it.title == dTitle }
                                                     if (song.webStreamUrl != null) { 
-                                                        playQueue = listOf(song); exoPlayer.setMediaItem(MediaItem.fromUri(song.webStreamUrl)); exoPlayer.prepare(); exoPlayer.play()
+                                                        playQueue = listOf(song); exoPlayer.setMediaItem(MediaItem.fromUri(song.webStreamUrl)); exoPlayer.prepare(); exoPlayer.play(); currentSong = song 
                                                     } else {
                                                         playWebSong(InternetSongData(realId, dTitle, song.artist, dArt)) 
                                                     }
                                                 } else { 
-                                                    playSongList(song, recentlyPlayedSongs.filter { it.id >= 0 }) 
+                                                    playSongList(song, recentlyPlayedSongs.filter { it.id >= 0 })
                                                 } 
                                             }) {
                                                 SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(dArt).crossfade(true).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(120.dp).clip(RoundedCornerShape(8.dp)), error = { FallbackIcon() })
@@ -638,11 +639,10 @@ fun MusicPlayerUI() {
                             }
                         }
                         3 -> {
-                            // FIXED: Replaced brittle YouTube streams with 100% stable Direct Radio URLs
                             val stations = listOf(
-                                InternetSongData("direct:https://stream.zeno.fm/f3wvbbqmdg8uv", "Lofi Girl (Beats to Relax/Study)", "Lofi Girl", "https://images.unsplash.com/photo-1518609878373-06d740f60d8b?w=600"),
-                                InternetSongData("direct:https://streams.ilovemusic.de/iloveradio17.mp3", "Chillhop Radio (Jazzy/Lofi)", "Chillhop Music", "https://images.unsplash.com/photo-1493225457124-a1a2a5f08eb6?w=600"),
-                                InternetSongData("direct:https://nightrive.stream.laut.fm/nightrive", "Synthwave Radio (Spacewave)", "Nightrive", "https://images.unsplash.com/photo-1614624532983-4ce03382d63d?w=600"),
+                                InternetSongData("direct:https://stream.zeno.fm/f3wvbbqmdg8uv", "Lofi Girl (Beats to Relax)", "Lofi Girl", "https://images.unsplash.com/photo-1518609878373-06d740f60d8b?w=600"),
+                                InternetSongData("direct:https://streams.ilovemusic.de/iloveradio17.mp3", "Chillhop Radio (Jazzy)", "Chillhop Music", "https://images.unsplash.com/photo-1493225457124-a1a2a5f08eb6?w=600"),
+                                InternetSongData("direct:https://nightrive.stream.laut.fm/nightrive", "Synthwave Radio", "Nightrive", "https://images.unsplash.com/photo-1614624532983-4ce03382d63d?w=600"),
                                 InternetSongData("direct:https://icecast2.play.cz/lounge", "Chillout Lounge Relax", "Lounge", "https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?w=600"),
                                 InternetSongData("direct:https://streams.ilovemusic.de/iloveradio1.mp3", "Top 40 Hits 24/7", "I Love Radio", "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=600")
                             )
@@ -781,7 +781,7 @@ fun MusicPlayerUI() {
                                 } 
                             } else { 
                                 playQueue = playQueue + s
-                                exoPlayer.addMediaItem(MediaItem.fromUri(s.audioUri)) 
+                                exoPlayer.addMediaItem(MediaItem.fromUri(s.albumArtUri)) 
                             }
                             selectedSongForAction = null 
                         }, modifier = Modifier.fillMaxWidth()) { Text("Add to Queue") } 
@@ -1081,6 +1081,7 @@ suspend fun getPipedStream(vid: String): String? {
             val res = fetchHttp("https://$inst/streams/$vid", 5000) ?: continue
             val json = JSONObject(res)
             
+            // FIXED: HLS EXTRACTOR RESTORED FOR LIVE RADIO
             val hls = json.optString("hls", "")
             if (hls.isNotBlank()) return hls
             
@@ -1141,16 +1142,8 @@ suspend fun fetchMultiSourceMetadata(title: String, artist: String): InternetSon
     
     val result = t1.await() ?: t2.await()
     if (result != null) {
-        try {
-            val res = fetchHttp("https://lrclib.net/api/search?q=${URLEncoder.encode("$title $artist", "UTF-8")}", 4000)
-            if (res != null) {
-                val arr = JSONArray(res)
-                if (arr.length() > 0) {
-                    return@coroutineScope result.copy(lyrics = arr.getJSONObject(0).optString("plainLyrics"))
-                }
-            }
-        } catch(e: Exception){}
-        return@coroutineScope result
+        val lyrics = searchLyricsAPI(title, artist)
+        return@coroutineScope result.copy(lyrics = lyrics)
     }
     return@coroutineScope null
 }
