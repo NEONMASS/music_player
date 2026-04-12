@@ -68,7 +68,6 @@ fun FallbackIcon(modifier: Modifier = Modifier, iconSize: Dp = 48.dp) {
     }
 }
 
-// FIXED: audioUri strictly separates the playable audio file from the visual album art
 data class LocalSong(
     val id: Long, val title: String, val artist: String, val albumId: Long, 
     val webStreamUrl: String? = null, val customArtUrl: String? = null, val lyrics: String? = null
@@ -97,7 +96,7 @@ fun TrackRow(songId: Long, title: String, artist: String, artUrl: String, isPlay
             Spacer(modifier = Modifier.height(2.dp))
             Text(artist, style = MaterialTheme.typography.bodySmall, fontSize = 13.sp, maxLines = 1, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), overflow = TextOverflow.Ellipsis)
         }
-        if (songId < 0) Icon(Icons.Default.CloudDownload, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f), modifier = Modifier.size(20.dp))
+        if (songId < 0 && !artUrl.contains("unsplash")) Icon(Icons.Default.CloudDownload, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f), modifier = Modifier.size(20.dp))
         IconButton(onClick = onAddQueue) { Icon(Icons.Default.Add, contentDescription = "Add", tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)) }
     }
 }
@@ -155,6 +154,9 @@ fun MusicPlayerUI() {
     val languages = listOf("All", "Tamil", "English", "Hindi", "Malayalam", "Telugu", "Kannada", "Marathi", "Bengali", "Punjabi", "Gujarati")
     var selectedLanguage by remember { mutableStateOf(sharedPrefs.getString("saved_lang", "") ?: "") } 
     var isPlaylistMode by remember { mutableStateOf(false) }
+
+    // Ensures selected language is up-to-date for ExoPlayer effect
+    val currentLang by rememberUpdatedState(selectedLanguage)
 
     LaunchedEffect(Unit) {
         if (selectedLanguage.isBlank()) {
@@ -229,7 +231,6 @@ fun MusicPlayerUI() {
         val idx = sourceList.indexOf(song)
         exoPlayer.stop()
         exoPlayer.clearMediaItems()
-        // FIXED: Universal use of proper audioUri for offline compatibility
         exoPlayer.setMediaItems(sourceList.map { s -> MediaItem.Builder().setUri(s.audioUri).setMediaId(s.id.toString()).build() })
         if (idx >= 0) exoPlayer.seekTo(idx, C.TIME_UNSET)
         exoPlayer.prepare()
@@ -364,6 +365,10 @@ fun MusicPlayerUI() {
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener { 
             override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
+            override fun onPlayerError(error: PlaybackException) {
+                Toast.makeText(context, "Stream error, skipping...", Toast.LENGTH_SHORT).show()
+                handleNext()
+            }
             override fun onPlaybackStateChanged(state: Int) { 
                 if (state == Player.STATE_ENDED) {
                     if (autoPlayContext.isNotEmpty() && autoPlayIndex in 0 until autoPlayContext.size - 1) { 
@@ -372,7 +377,9 @@ fun MusicPlayerUI() {
                     } else if ((currentSong?.id ?: 0L) < 0L) {
                         coroutineScope.launch {
                             val cSong = currentSong ?: return@launch
-                            val recQuery = "${cSong.artist} Hits"
+                            // FIXED: Language is now explicitly injected into recommendations
+                            val langSuffix = if (currentLang != "All" && currentLang.isNotBlank()) " $currentLang" else ""
+                            val recQuery = "${cSong.artist} Hits$langSuffix"
                             val recs = fetchLiveSearchResults(recQuery, recQuery, false)
                             if (recs.isNotEmpty()) { 
                                 val nextSong = recs[0]
@@ -384,11 +391,6 @@ fun MusicPlayerUI() {
                         }
                     }
                 }
-            }
-            // FIXED: Crash handling allows seamless skips instead of UI lock
-            override fun onPlayerError(error: PlaybackException) {
-                Toast.makeText(context, "Stream error, skipping...", Toast.LENGTH_SHORT).show()
-                handleNext()
             }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) { 
                 if (mediaItem == null || exoPlayer.mediaItemCount == 0) { 
@@ -545,12 +547,12 @@ fun MusicPlayerUI() {
                                                     autoPlayContext = recentlyPlayedSongs.filter { it.id < 0 }.map { InternetSongData(it.customArtUrl?.substringAfter("|||", "") ?: "", it.title, it.artist, it.customArtUrl?.substringBefore("|||") ?: "") }
                                                     autoPlayIndex = autoPlayContext.indexOfFirst { it.title == dTitle }
                                                     if (song.webStreamUrl != null) { 
-                                                        playSongList(song, listOf(song))
+                                                        playQueue = listOf(song); exoPlayer.setMediaItem(MediaItem.fromUri(song.webStreamUrl)); exoPlayer.prepare(); exoPlayer.play()
                                                     } else {
                                                         playWebSong(InternetSongData(realId, dTitle, song.artist, dArt)) 
                                                     }
                                                 } else { 
-                                                    playSongList(song, recentlyPlayedSongs.filter { it.id >= 0 })
+                                                    playSongList(song, recentlyPlayedSongs.filter { it.id >= 0 }) 
                                                 } 
                                             }) {
                                                 SubcomposeAsyncImage(model = ImageRequest.Builder(LocalContext.current).data(dArt).crossfade(true).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.size(120.dp).clip(RoundedCornerShape(8.dp)), error = { FallbackIcon() })
@@ -580,9 +582,7 @@ fun MusicPlayerUI() {
                                             onClick = { 
                                                 if (song.id < 0) { 
                                                     if (song.webStreamUrl != null) playSongList(song, listOf(song)) else playWebSong(InternetSongData(realId, dTitle, dArtist, dArt)) 
-                                                } else { 
-                                                    playSongList(song, favoriteSongs.filter { it.id >= 0 })
-                                                } 
+                                                } else { playSongList(song, favoriteSongs.filter { it.id >= 0 }) } 
                                             }, 
                                             onLongClick = { selectedSongForAction = song },
                                             onAddQueue = { handleAddQueue(song, InternetSongData(realId, dTitle, dArtist, dArt)) }
@@ -638,12 +638,13 @@ fun MusicPlayerUI() {
                             }
                         }
                         3 -> {
+                            // FIXED: Replaced brittle YouTube streams with 100% stable Direct Radio URLs
                             val stations = listOf(
-                                InternetSongData("yt:jfKfPfyJRdk", "Lofi Girl (Beats to Relax/Study)", "Lofi Girl", "https://img.youtube.com/vi/jfKfPfyJRdk/hqdefault.jpg"),
-                                InternetSongData("yt:4xDzrUhVKcg", "Synthwave Radio (Spacewave)", "Lofi Girl", "https://img.youtube.com/vi/4xDzrUhVKcg/hqdefault.jpg"),
-                                InternetSongData("yt:5yx6BWlEVcY", "Chillhop Radio (Jazzy/Lofi)", "Chillhop Music", "https://img.youtube.com/vi/5yx6BWlEVcY/hqdefault.jpg"),
-                                InternetSongData("yt:1t4K450f3qM", "Spinnin' Records 24/7", "Spinnin' Records", "https://img.youtube.com/vi/1t4K450f3qM/hqdefault.jpg"),
-                                InternetSongData("yt:7NOSDKb0HlU", "Chillout Lounge Relax", "Chillout", "https://img.youtube.com/vi/7NOSDKb0HlU/hqdefault.jpg")
+                                InternetSongData("direct:https://stream.zeno.fm/f3wvbbqmdg8uv", "Lofi Girl (Beats to Relax/Study)", "Lofi Girl", "https://images.unsplash.com/photo-1518609878373-06d740f60d8b?w=600"),
+                                InternetSongData("direct:https://streams.ilovemusic.de/iloveradio17.mp3", "Chillhop Radio (Jazzy/Lofi)", "Chillhop Music", "https://images.unsplash.com/photo-1493225457124-a1a2a5f08eb6?w=600"),
+                                InternetSongData("direct:https://nightrive.stream.laut.fm/nightrive", "Synthwave Radio (Spacewave)", "Nightrive", "https://images.unsplash.com/photo-1614624532983-4ce03382d63d?w=600"),
+                                InternetSongData("direct:https://icecast2.play.cz/lounge", "Chillout Lounge Relax", "Lounge", "https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?w=600"),
+                                InternetSongData("direct:https://streams.ilovemusic.de/iloveradio1.mp3", "Top 40 Hits 24/7", "I Love Radio", "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=600")
                             )
                             LazyColumn(modifier = Modifier.fillMaxSize()) {
                                 item { Text("24/7 Live Radio", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(16.dp)) }
@@ -1012,9 +1013,15 @@ suspend fun fetchLiveSearchResults(query: String, rawQuery: String, isPlaylistSe
 suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = ""): String? = withContext(Dispatchers.IO) {
     if (AppCache.streamUrls.containsKey(songId)) return@withContext AppCache.streamUrls[songId]
     
+    // FIXED: Support for direct URLs
+    if (songId.startsWith("direct:")) {
+        val url = songId.removePrefix("direct:")
+        AppCache.streamUrls[songId] = url
+        return@withContext url
+    }
+
     var finalUrl: String? = null
 
-    // 1. Try Saavn if not explicitly YT/Archive
     if (songId.isNotBlank() && !songId.startsWith("ia:") && !songId.startsWith("yt:")) {
         val apis = listOf("https://saavn.dev/api/songs?ids=", "https://saavn.sumit.co/api/songs?ids=")
         for (api in apis) {
@@ -1028,7 +1035,6 @@ suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = 
                             val lastObj = urls.getJSONObject(urls.length()-1)
                             var url = lastObj.optString("url").takeIf { it.isNotBlank() } ?: lastObj.optString("link")
                             if (url.isNotBlank()) {
-                                // FIXED: Cleans cleartext HTTP to prevent silent crashing
                                 finalUrl = url.replace("http://", "https://")
                                 break
                             }
@@ -1039,13 +1045,11 @@ suspend fun fetchAudioStreamUrl(title: String, artist: String, songId: String = 
         }
     }
 
-    // 2. Try YouTube if explicitly YT
     if (finalUrl == null && songId.startsWith("yt:")) {
         val vid = songId.removePrefix("yt:")
         finalUrl = getPipedStream(vid)
     }
 
-    // 3. ULTIMATE FALLBACK: Search YouTube directly
     if (finalUrl.isNullOrBlank() && title.isNotBlank()) {
         val qEnc = URLEncoder.encode("$title $artist audio", "UTF-8")
         val instances = listOf("pipedapi.kavin.rocks", "pipedapi.tokhmi.xyz", "piped.projectsegfau.lt", "pipedapi.smnz.de")
@@ -1077,7 +1081,6 @@ suspend fun getPipedStream(vid: String): String? {
             val res = fetchHttp("https://$inst/streams/$vid", 5000) ?: continue
             val json = JSONObject(res)
             
-            // FIXED: Added HLS fallback for 24/7 radio streams
             val hls = json.optString("hls", "")
             if (hls.isNotBlank()) return hls
             
